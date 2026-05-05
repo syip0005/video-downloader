@@ -1,0 +1,33 @@
+# Portainer stack — paste this into "Stacks > Add stack > Web editor".
+# Assumes the image is already published; replace `image:` with your registry
+# path (e.g. ghcr.io/<you>/video-downloader:latest) before deploying.
+
+services:
+  app:
+    image: ghcr.io/syip0005/video-downloader:latest
+    container_name: video-downloader
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - downloads:/data/downloads
+    environment:
+      VD_DOWNLOAD_DIR: /data/downloads
+      VD_FRONTEND_DIST: /app/frontend/dist
+      VD_LOG_LEVEL: INFO
+      # Tune limits here. Defaults shown — uncomment to override.
+      VD_MAX_CONCURRENT_DOWNLOADS: 3
+      VD_MAX_FILESIZE_BYTES: 8589934592      # 8 GiB per file
+      VD_MAX_DURATION_SECONDS: 21600         # 6 hours per video
+      VD_MAX_TOTAL_DISK_BYTES: 68719476736   # 64 GiB total quota
+      VD_JOB_TTL_SECONDS: 21600              # 6 hours
+      VD_CLEANUP_INTERVAL_SECONDS: 900       # 15 min
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  downloads:
