@@ -69,6 +69,7 @@ export function useDownload() {
             job,
             error: job.error,
           }))
+          notifyTerminal(job)
           return
         }
         setState((s) => ({ ...s, phase: "active", job, error: null }))
@@ -120,6 +121,8 @@ export function useDownload() {
   const pick = useCallback(
     async (opts: { format?: DownloadFormat; formatId?: string } = {}) => {
       cancelled.current = false
+      // Ask for notification permission on the user gesture so iOS allows it.
+      void ensureNotificationPermission()
       setState((s) => ({ ...s, phase: "submitting", error: null }))
       try {
         const url = await getCurrentUrl(setState)
@@ -150,6 +153,44 @@ export function useDownload() {
   }, [stopPolling])
 
   return { state, probe, pick, back, reset }
+}
+
+/* Notifications — fire only if the tab isn't visible (in-tab UI already
+   conveys completion); requires permission. iOS Safari only honours these
+   when the PWA is installed to the home screen. */
+function notifyTerminal(job: JobResponse) {
+  if (typeof window === "undefined") return
+  if (!("Notification" in window)) return
+  if (document.visibilityState === "visible") return
+  if (Notification.permission !== "granted") return
+
+  const ok = job.status === "completed"
+  const title = ok ? "媽下載器 · ready" : "媽下載器 · failed"
+  const body = ok
+    ? job.title
+      ? `${job.title} — tap to save`
+      : "your video is ready to save"
+    : (job.error ?? "download failed")
+
+  try {
+    new Notification(title, {
+      body,
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+      tag: `job-${job.id}`,
+    })
+  } catch {
+    /* silently ignore — some browsers throw when called outside a SW */
+  }
+}
+
+export async function ensureNotificationPermission(): Promise<boolean> {
+  if (typeof window === "undefined" || !("Notification" in window))
+    return false
+  if (Notification.permission === "granted") return true
+  if (Notification.permission === "denied") return false
+  const result = await Notification.requestPermission()
+  return result === "granted"
 }
 
 // Read the latest url from state without re-creating the closure each render.

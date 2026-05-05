@@ -26,6 +26,16 @@ export default defineConfig({
         scope: '/',
         start_url: '/',
         lang: 'en',
+        share_target: {
+          action: '/',
+          method: 'GET',
+          enctype: 'application/x-www-form-urlencoded',
+          params: {
+            title: 'title',
+            text: 'url',
+            url: 'url',
+          },
+        },
         icons: [
           {
             src: '/icon-192.png',

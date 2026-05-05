@@ -51,6 +51,19 @@ export default function App() {
 function Hero() {
   const { state, probe, pick, back, reset } = useDownload()
 
+  // Web Share Target: if launched via a share, the URL arrives in ?url= or
+  // ?text= (iOS sometimes only fills text). Auto-probe and clean the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const candidate = params.get("url") ?? params.get("text") ?? ""
+    const match = candidate.match(/https?:\/\/\S+/i)
+    if (match) {
+      probe(match[0])
+      window.history.replaceState({}, "", window.location.pathname)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   return (
     <motion.section
       initial={{ opacity: 0, y: 12 }}
@@ -507,16 +520,7 @@ function JobPanel({
 
       <div className="flex items-center justify-between gap-2 p-3">
         {phase === "done" && job ? (
-          <a
-            href={fileUrl(job.id)}
-            download={job.filename ?? undefined}
-            className="flex-1 rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
-          >
-            ★ save{" "}
-            <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
-              影片
-            </span>
-          </a>
+          <SaveButton job={job} />
         ) : phase === "error" ? (
           <span className="flex-1 truncate text-xs text-hot">
             {error ?? "something went wrong"}
@@ -722,6 +726,78 @@ function MoonIcon() {
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
   )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Save / share button — uses navigator.share() so iOS surfaces the share     */
+/* sheet (Save to Photos, Save to Files, Messages, etc.). Falls back to a    */
+/* plain download link on browsers without Web Share file support.           */
+
+function SaveButton({ job }: { job: JobResponse }) {
+  const [busy, setBusy] = useState(false)
+  const canShareFiles =
+    typeof navigator !== "undefined" &&
+    typeof navigator.canShare === "function"
+
+  const handleShare = async (e: React.MouseEvent) => {
+    if (!canShareFiles) return // let the <a> handle it
+    e.preventDefault()
+    setBusy(true)
+    try {
+      const res = await fetch(fileUrl(job.id))
+      const blob = await res.blob()
+      const file = new File([blob], job.filename ?? "video.mp4", {
+        type: blob.type || "video/mp4",
+      })
+      if (navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: job.title ?? "video",
+        })
+      } else {
+        // Fall back to a programmatic download.
+        triggerDownload(fileUrl(job.id), job.filename)
+      }
+    } catch (err) {
+      // User cancelled or share failed — silently fall back to download.
+      if (!isAbort(err)) triggerDownload(fileUrl(job.id), job.filename)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <a
+      href={fileUrl(job.id)}
+      download={job.filename ?? undefined}
+      onClick={handleShare}
+      className="flex-1 rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
+    >
+      {busy ? (
+        <Spinner />
+      ) : (
+        <>
+          ★ save{" "}
+          <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+            影片
+          </span>
+        </>
+      )}
+    </a>
+  )
+}
+
+function triggerDownload(url: string, filename: string | null) {
+  const a = document.createElement("a")
+  a.href = url
+  if (filename) a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+}
+
+function isAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError"
 }
 
 /* -------------------------------------------------------------------------- */
