@@ -1,5 +1,7 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @theme {
   --color-cream: #fff4e0;
   --color-bubble: #ffb8e0;
@@ -11,13 +13,36 @@
   --color-ink: #1a1530;
   --color-shadow: #2a1f4d;
 
-  --font-pixel: "Press Start 2P", "VT323", monospace;
-  --font-mono: "VT323", "Courier New", monospace;
-  --font-sans: "Comic Neue", "Comic Sans MS", system-ui, sans-serif;
+  --font-sans: "DM Sans", "Noto Sans TC", system-ui, -apple-system, sans-serif;
+  --font-mono: "DM Mono", "Noto Sans TC", ui-monospace, monospace;
+  --font-pixel: "DM Mono", "Noto Sans TC", ui-monospace, monospace;
+  --font-tc: "Noto Sans TC", "DM Sans", system-ui, sans-serif;
 }
 
 :root {
   color-scheme: light;
+  --bg: var(--color-cream);
+  --fg: #0a0717;
+  --surface: #ffffff;
+  --border: rgba(10, 7, 23, 0.2);
+  --muted: rgba(10, 7, 23, 0.78);
+  --subtle: rgba(10, 7, 23, 0.55);
+  --dot: rgba(10, 7, 23, 0.22);
+  --shadow-ambient: 0 1px 0 0 rgba(26, 21, 48, 0.04),
+    0 8px 24px -12px rgba(26, 21, 48, 0.25);
+}
+
+.dark {
+  color-scheme: dark;
+  --bg: #0f0b1f;
+  --fg: #f5efff;
+  --surface: #1a1530;
+  --border: rgba(245, 239, 255, 0.12);
+  --muted: rgba(245, 239, 255, 0.6);
+  --subtle: rgba(245, 239, 255, 0.35);
+  --dot: rgba(245, 239, 255, 0.12);
+  --shadow-ambient: 0 1px 0 0 rgba(0, 0, 0, 0.4),
+    0 12px 32px -12px rgba(0, 0, 0, 0.6);
 }
 
 html,
@@ -28,10 +53,11 @@ body,
 
 body {
   font-family: var(--font-sans);
-  color: var(--color-ink);
-  background: var(--color-cream);
+  color: var(--fg);
+  background: var(--bg);
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+  transition: background-color 0.3s ease, color 0.3s ease;
 }
 
 /* Chunky offset shadow — the 90s sticker look */
@@ -47,11 +73,7 @@ body {
 
 /* Dotted retro grid background */
 .bg-dots {
-  background-image: radial-gradient(
-    circle,
-    rgba(26, 21, 48, 0.18) 1.2px,
-    transparent 1.2px
-  );
+  background-image: radial-gradient(circle, var(--dot) 1.2px, transparent 1.2px);
   background-size: 22px 22px;
 }
 

@@ -10,7 +10,16 @@ class Settings(BaseSettings):
     download_dir: Path = Path("./downloads")
     cors_origins: list[str] = ["http://localhost:5173", "http://localhost:4173"]
     max_concurrent_downloads: int = 3
+
+    # Permissive single-user limits.
+    max_filesize_bytes: int = 8 * 1024 * 1024 * 1024  # 8 GiB
+    max_duration_seconds: int = 6 * 60 * 60  # 6 hours
+
+    # Completed/failed jobs older than this are evicted; their files unlinked.
     job_ttl_seconds: int = 60 * 60 * 6
+    cleanup_interval_seconds: int = 15 * 60
+
+    log_level: str = "INFO"
 
 
 @lru_cache

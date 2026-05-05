@@ -28,6 +28,11 @@ class UnsupportedURL(AppError):
     code = "unsupported_url"
 
 
+class MediaTooLarge(AppError):
+    status_code = 413
+    code = "media_too_large"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     async def _handle_app_error(_: Request, exc: AppError) -> JSONResponse:
