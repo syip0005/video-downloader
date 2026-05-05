@@ -838,39 +838,26 @@ const IOS_SAVE_TO_PHOTOS_SHORTCUT =
   "https://www.icloud.com/shortcuts/14e9aebf04b24156acc34ceccf7e6fcd"
 
 function SaveButton({ job }: { job: JobResponse }) {
-  // iOS PWA standalone mode silently ignores the `download` attribute and
-  // navigates the PWA window to the file URL — landing the user in QuickLook
-  // ("Open in WhatsApp / More") with no way back. window.open works but
-  // leaves a blank Safari tab behind. A hidden iframe whose src is an
-  // attachment URL triggers the download via the platform's native handler
-  // without spawning a visible window, then we drop the iframe so memory is
-  // reclaimed. Classic FileSaver.js pattern.
-  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    if (typeof window === "undefined") return
-    const isIos = /iphone|ipad|ipod/i.test(window.navigator.userAgent)
-    const standalone =
-      window.matchMedia("(display-mode: standalone)").matches ||
+  // iOS PWA standalone mode genuinely has no working direct-download path.
+  // <a download> is silently ignored, window.open leaves a blank Safari tab,
+  // iframe-trigger doesn't fire iOS' download handler, and location.assign
+  // navigates the PWA window into QuickLook ("Open in WhatsApp / More").
+  // Cobalt.tools concluded the same and explicitly disables direct download
+  // in this mode — we follow suit and direct the user to Safari instead.
+  const isIosPwa =
+    typeof window !== "undefined" &&
+    /iphone|ipad|ipod/i.test(window.navigator.userAgent) &&
+    (window.matchMedia("(display-mode: standalone)").matches ||
       ("standalone" in window.navigator &&
-        (window.navigator as { standalone?: boolean }).standalone === true)
-    if (!(isIos && standalone)) return
+        (window.navigator as { standalone?: boolean }).standalone === true))
 
-    e.preventDefault()
-    const url = fileUrl(job.id)
-    const iframe = document.createElement("iframe")
-    iframe.style.display = "none"
-    iframe.src = url
-    document.body.appendChild(iframe)
-    // Clean up after a generous delay — iOS needs the iframe alive long
-    // enough for the platform download handler to take over.
-    window.setTimeout(() => iframe.remove(), 60_000)
-  }
+  if (isIosPwa) return <IosPwaSaveFallback job={job} />
 
   return (
     <div className="flex-1">
       <a
         href={fileUrl(job.id)}
         download={job.filename ?? undefined}
-        onClick={handleClick}
         className="block rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
       >
         ★ save{" "}
@@ -878,6 +865,38 @@ function SaveButton({ job }: { job: JobResponse }) {
           影片
         </span>
       </a>
+      <IosPhotosHint />
+    </div>
+  )
+}
+
+function IosPwaSaveFallback({ job }: { job: JobResponse }) {
+  // window.open(url, "_blank") is what cobalt.tools uses for URL downloads
+  // and is the only path that actually pulls bytes onto the device from an
+  // installed iOS PWA. Safari opens a new window, sees Content-Disposition:
+  // attachment from the backend, and triggers its native download tray. The
+  // blank window left behind is iOS rendering an empty response — there's
+  // no way to suppress it from a PWA, just close it manually after the
+  // download finishes.
+  const handleSave = () => {
+    window.open(fileUrl(job.id), "_blank", "noopener,noreferrer")
+  }
+
+  return (
+    <div className="flex-1">
+      <button
+        type="button"
+        onClick={handleSave}
+        className="block w-full rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
+      >
+        ★ save{" "}
+        <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+          影片
+        </span>
+      </button>
+      <p className="mt-1.5 text-center text-[11px] leading-snug text-[var(--subtle)]">
+        opens a Safari tab to download · close it once done
+      </p>
       <IosPhotosHint />
     </div>
   )
