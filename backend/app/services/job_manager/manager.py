@@ -7,6 +7,7 @@ from pathlib import Path
 
 from app.schemas import DownloadFormat
 from app.services.downloader import download
+from app.services.downloader.url import canonicalize
 from app.services.job_manager.job import Job
 from app.services.job_manager.status import JobStatus
 
@@ -37,45 +38,78 @@ class JobManager:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def enqueue(self, url: str, fmt: DownloadFormat) -> Job:
-        cached = self._find_cached(url, fmt)
-        if cached is not None:
-            # Refresh updated_at so a cache hit keeps the file alive past the
-            # next TTL sweep — without this, repeatedly re-requesting a video
-            # on the boundary of expiry would still let it get evicted.
-            cached.updated_at = time.time()
-            log.info("cache hit job=%s url=%s fmt=%s", cached.id, url, fmt)
-            return cached
+    async def enqueue(
+        self, url: str, fmt: DownloadFormat, format_id: str | None = None
+    ) -> Job:
+        existing = self._find_existing(url, fmt, format_id)
+        if existing is not None:
+            # Refresh updated_at so a hit keeps the entry alive past the next
+            # TTL sweep — for an in-flight job this is harmless; for a
+            # COMPLETED job it prevents re-requesting on the boundary of
+            # expiry from still letting it get evicted.
+            existing.updated_at = time.time()
+            log.info(
+                "reuse job=%s status=%s url=%s fmt=%s format_id=%s",
+                existing.id,
+                existing.status,
+                url,
+                fmt,
+                format_id,
+            )
+            return existing
 
-        job = Job(id=uuid.uuid4().hex[:12], url=url, format=fmt)
+        job = Job(id=uuid.uuid4().hex[:12], url=url, format=fmt, format_id=format_id)
         self._jobs[job.id] = job
-        log.info("enqueue job=%s url=%s fmt=%s", job.id, url, fmt)
+        log.info("enqueue job=%s url=%s fmt=%s format_id=%s", job.id, url, fmt, format_id)
         task = asyncio.create_task(self._run(job.id), name=f"download-{job.id}")
         task.add_done_callback(lambda t, jid=job.id: self._tasks.pop(jid, None))
         self._tasks[job.id] = task
         return job
 
-    def _find_cached(self, url: str, fmt: DownloadFormat) -> Job | None:
-        """Return the newest COMPLETED job for (url, fmt) whose file is still on disk.
+    def _find_existing(
+        self, url: str, fmt: DownloadFormat, format_id: str | None
+    ) -> Job | None:
+        """Coalesce + cache lookup for an equivalent submission.
 
-        If the file was already evicted (by TTL or disk quota) the record is
-        ignored — eviction is by design "the file is gone, get it again" — so
-        the caller falls through to a fresh download.
+        Matches by canonicalized URL so `youtu.be/<id>`, `youtube.com/watch?v=<id>`,
+        `youtube.com/shorts/<id>`, and tracking-decorated variants all collapse to
+        the same key. The cache key also includes `(format, format_id)` so different
+        qualities of the same video stay distinct.
+
+        Preference order:
+          1. An in-flight job (QUEUED or DOWNLOADING) — newest first. Lets a second
+             submit attach to a running download instead of starting a parallel
+             one (request coalescing).
+          2. The newest COMPLETED job whose file is still on disk. If the file
+             was evicted (TTL or disk quota), the record is skipped — eviction
+             means "gone forever, fetch it again", by design.
+
+        Returns None when neither applies, so the caller starts a fresh download.
         """
-        candidates = sorted(
-            (
-                j
-                for j in self._jobs.values()
-                if j.url == url
-                and j.format == fmt
-                and j.status == JobStatus.COMPLETED
-                and j.filename is not None
-            ),
+        canonical = canonicalize(url)
+        matches = [
+            j
+            for j in self._jobs.values()
+            if j.format == fmt
+            and j.format_id == format_id
+            and canonicalize(j.url) == canonical
+        ]
+
+        in_flight = sorted(
+            (j for j in matches if j.status in (JobStatus.QUEUED, JobStatus.DOWNLOADING)),
+            key=lambda j: j.created_at,
+            reverse=True,
+        )
+        if in_flight:
+            return in_flight[0]
+
+        completed = sorted(
+            (j for j in matches if j.status == JobStatus.COMPLETED and j.filename is not None),
             key=lambda j: j.updated_at,
             reverse=True,
         )
-        for job in candidates:
-            assert job.filename is not None  # filtered above; for type checker
+        for job in completed:
+            assert job.filename is not None
             if (self._download_dir / job.filename).exists():
                 return job
         return None
@@ -167,6 +201,7 @@ class JobManager:
                     out_id=job.id,
                     max_filesize_bytes=self._max_filesize_bytes,
                     max_duration_seconds=self._max_duration_seconds,
+                    format_id=job.format_id,
                     on_progress=lambda p: self._on_progress(job, p),
                 )
                 job.title = result.title

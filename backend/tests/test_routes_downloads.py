@@ -21,8 +21,10 @@ class FakeJobManager:
         self.jobs: dict[str, Job] = {}
         self.enqueued: list[tuple[str, DownloadFormat]] = []
 
-    async def enqueue(self, url: str, fmt: DownloadFormat) -> Job:
-        job = Job(id=f"j{len(self.jobs)}", url=url, format=fmt)
+    async def enqueue(
+        self, url: str, fmt: DownloadFormat, format_id: str | None = None
+    ) -> Job:
+        job = Job(id=f"j{len(self.jobs)}", url=url, format=fmt, format_id=format_id)
         self.jobs[job.id] = job
         self.enqueued.append((url, fmt))
         return job

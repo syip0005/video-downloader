@@ -366,3 +366,61 @@ def test_failed_job_is_not_used_as_a_cache_hit(tmp_download_dir, monkeypatch):
         assert (await m.get(b.id)).status == JobStatus.COMPLETED
 
     _run(go())
+
+
+def test_coalesces_to_existing_in_flight_job(tmp_download_dir, monkeypatch):
+    calls = 0
+    gate = asyncio.Event()
+
+    async def fake(url, fmt, *, out_dir, out_id, on_progress=None, **_):
+        nonlocal calls
+        calls += 1
+        await gate.wait()
+        return _result_for(out_dir, out_id, b"data")
+
+    _patch_download(monkeypatch, fake)
+
+    async def go():
+        m = _make(tmp_download_dir, max_concurrent=2)
+        first = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        # Yield so the task enters `fake` and starts waiting on `gate`.
+        for _ in range(20):
+            await asyncio.sleep(0)
+
+        second = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        # Same job returned, no second task started.
+        assert second.id == first.id
+        assert calls == 1
+
+        gate.set()
+        await asyncio.wait_for(m._tasks[first.id], timeout=2)
+        assert (await m.get(first.id)).status == JobStatus.COMPLETED
+
+    _run(go())
+
+
+def test_canonicalised_urls_collapse_to_one_cache_entry(tmp_download_dir, monkeypatch):
+    calls = 0
+
+    async def fake(url, fmt, *, out_dir, out_id, on_progress=None, **_):
+        nonlocal calls
+        calls += 1
+        return _result_for(out_dir, out_id, b"data")
+
+    _patch_download(monkeypatch, fake)
+
+    async def go():
+        m = _make(tmp_download_dir, max_concurrent=2)
+        # Long-form YouTube URL with tracking params.
+        first = await m.enqueue(
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&si=tracker&t=42",
+            DownloadFormat.BEST,
+        )
+        await asyncio.wait_for(m._tasks[first.id], timeout=2)
+
+        # Short youtu.be form for the same video — should hit the cache.
+        second = await m.enqueue("https://youtu.be/dQw4w9WgXcQ", DownloadFormat.BEST)
+        assert second.id == first.id
+        assert calls == 1
+
+    _run(go())
