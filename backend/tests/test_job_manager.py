@@ -33,6 +33,7 @@ def _make(download_dir: Path, *, max_concurrent: int = 2) -> JobManager:
         download_dir=download_dir,
         max_filesize_bytes=10 * 1024 * 1024 * 1024,
         max_duration_seconds=3600,
+        max_total_disk_bytes=10 * 1024 * 1024 * 1024,
     )
 
 
@@ -241,5 +242,127 @@ def test_cleanup_keeps_recent_and_in_flight_jobs(tmp_download_dir, monkeypatch):
         evicted = await m.cleanup(ttl_seconds=3600)
         assert evicted == 0
         assert (await m.get(running.id)) is not None
+
+    _run(go())
+
+
+def test_enqueue_returns_cached_job_for_same_url_and_format(tmp_download_dir, monkeypatch):
+    calls = 0
+
+    async def fake(url, fmt, *, out_dir, out_id, on_progress=None, **_):
+        nonlocal calls
+        calls += 1
+        return _result_for(out_dir, out_id, b"hello")
+
+    _patch_download(monkeypatch, fake)
+
+    async def go():
+        m = _make(tmp_download_dir, max_concurrent=2)
+        first = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        await asyncio.wait_for(m._tasks[first.id], timeout=2)
+
+        # Second submit with identical (url, fmt) reuses the existing job.
+        second = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        assert second.id == first.id
+        assert calls == 1
+        # No background task spawned for the cache hit.
+        assert first.id not in m._tasks
+
+    _run(go())
+
+
+def test_cache_hit_refreshes_updated_at_so_ttl_doesnt_evict_actively_used_files(
+    tmp_download_dir, monkeypatch
+):
+    async def fake(url, fmt, *, out_dir, out_id, on_progress=None, **_):
+        return _result_for(out_dir, out_id, b"hello")
+
+    _patch_download(monkeypatch, fake)
+
+    async def go():
+        m = _make(tmp_download_dir, max_concurrent=1)
+        first = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        await asyncio.wait_for(m._tasks[first.id], timeout=2)
+        # Pretend the job is about to expire.
+        first.updated_at -= 10_000
+        old_updated = first.updated_at
+
+        await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        assert first.updated_at > old_updated
+
+    _run(go())
+
+
+def test_different_format_does_not_hit_cache(tmp_download_dir, monkeypatch):
+    calls = 0
+
+    async def fake(url, fmt, *, out_dir, out_id, on_progress=None, **_):
+        nonlocal calls
+        calls += 1
+        return _result_for(out_dir, out_id)
+
+    _patch_download(monkeypatch, fake)
+
+    async def go():
+        m = _make(tmp_download_dir, max_concurrent=2)
+        a = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        await asyncio.wait_for(m._tasks[a.id], timeout=2)
+
+        b = await m.enqueue("https://example.com/x", DownloadFormat.AUDIO)
+        await asyncio.wait_for(m._tasks[b.id], timeout=2)
+        assert b.id != a.id
+        assert calls == 2
+
+    _run(go())
+
+
+def test_cache_misses_when_file_was_evicted_off_disk(tmp_download_dir, monkeypatch):
+    calls = 0
+
+    async def fake(url, fmt, *, out_dir, out_id, on_progress=None, **_):
+        nonlocal calls
+        calls += 1
+        return _result_for(out_dir, out_id, b"hello")
+
+    _patch_download(monkeypatch, fake)
+
+    async def go():
+        m = _make(tmp_download_dir, max_concurrent=2)
+        first = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        await asyncio.wait_for(m._tasks[first.id], timeout=2)
+
+        # Simulate the disk-quota path or external cleanup removing the file.
+        (tmp_download_dir / first.filename).unlink()
+
+        second = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        await asyncio.wait_for(m._tasks[second.id], timeout=2)
+        assert second.id != first.id
+        assert calls == 2
+
+    _run(go())
+
+
+def test_failed_job_is_not_used_as_a_cache_hit(tmp_download_dir, monkeypatch):
+    attempts = 0
+
+    async def fake(url, fmt, *, out_dir, out_id, on_progress=None, **_):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient")
+        return _result_for(out_dir, out_id)
+
+    _patch_download(monkeypatch, fake)
+
+    async def go():
+        m = _make(tmp_download_dir, max_concurrent=2)
+        a = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        await asyncio.wait_for(m._tasks[a.id], timeout=2)
+        assert (await m.get(a.id)).status == JobStatus.FAILED
+
+        b = await m.enqueue("https://example.com/x", DownloadFormat.BEST)
+        await asyncio.wait_for(m._tasks[b.id], timeout=2)
+        assert b.id != a.id
+        assert (await m.get(b.id)).status == JobStatus.COMPLETED
 
     _run(go())

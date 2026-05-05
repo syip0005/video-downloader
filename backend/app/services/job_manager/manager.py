@@ -27,15 +27,26 @@ class JobManager:
         download_dir: Path,
         max_filesize_bytes: int,
         max_duration_seconds: int,
+        max_total_disk_bytes: int,
     ) -> None:
         self._download_dir = download_dir
         self._max_filesize_bytes = max_filesize_bytes
         self._max_duration_seconds = max_duration_seconds
+        self._max_total_disk_bytes = max_total_disk_bytes
         self._jobs: dict[str, Job] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def enqueue(self, url: str, fmt: DownloadFormat) -> Job:
+        cached = self._find_cached(url, fmt)
+        if cached is not None:
+            # Refresh updated_at so a cache hit keeps the file alive past the
+            # next TTL sweep — without this, repeatedly re-requesting a video
+            # on the boundary of expiry would still let it get evicted.
+            cached.updated_at = time.time()
+            log.info("cache hit job=%s url=%s fmt=%s", cached.id, url, fmt)
+            return cached
+
         job = Job(id=uuid.uuid4().hex[:12], url=url, format=fmt)
         self._jobs[job.id] = job
         log.info("enqueue job=%s url=%s fmt=%s", job.id, url, fmt)
@@ -43,6 +54,31 @@ class JobManager:
         task.add_done_callback(lambda t, jid=job.id: self._tasks.pop(jid, None))
         self._tasks[job.id] = task
         return job
+
+    def _find_cached(self, url: str, fmt: DownloadFormat) -> Job | None:
+        """Return the newest COMPLETED job for (url, fmt) whose file is still on disk.
+
+        If the file was already evicted (by TTL or disk quota) the record is
+        ignored — eviction is by design "the file is gone, get it again" — so
+        the caller falls through to a fresh download.
+        """
+        candidates = sorted(
+            (
+                j
+                for j in self._jobs.values()
+                if j.url == url
+                and j.format == fmt
+                and j.status == JobStatus.COMPLETED
+                and j.filename is not None
+            ),
+            key=lambda j: j.updated_at,
+            reverse=True,
+        )
+        for job in candidates:
+            assert job.filename is not None  # filtered above; for type checker
+            if (self._download_dir / job.filename).exists():
+                return job
+        return None
 
     async def get(self, job_id: str) -> Job | None:
         return self._jobs.get(job_id)
@@ -80,6 +116,37 @@ class JobManager:
             log.info("cleanup evicted=%d ttl_seconds=%s", evicted, ttl_seconds)
         return evicted
 
+    async def enforce_disk_quota(self, max_bytes: int) -> int:
+        """Evict oldest terminal jobs until total filesize is at or below `max_bytes`.
+
+        Only touches COMPLETED/FAILED jobs — never evicts in-flight downloads,
+        even if their partial files would push usage over. Oldest-first by
+        `updated_at` (which for terminal jobs equals their completion time),
+        so this behaves as FIFO eviction over finished downloads.
+        """
+        terminal = {JobStatus.COMPLETED, JobStatus.FAILED}
+        total = sum(j.filesize or 0 for j in self._jobs.values())
+        if total <= max_bytes:
+            return 0
+        candidates = sorted(
+            (j for j in self._jobs.values() if j.status in terminal),
+            key=lambda j: j.updated_at,
+        )
+        evicted = 0
+        for job in candidates:
+            if total <= max_bytes:
+                break
+            if job.filename:
+                path = self._download_dir / job.filename
+                with contextlib.suppress(FileNotFoundError):
+                    path.unlink()
+            total -= job.filesize or 0
+            del self._jobs[job.id]
+            evicted += 1
+        if evicted:
+            log.info("disk_quota evicted=%d max_bytes=%d", evicted, max_bytes)
+        return evicted
+
     async def shutdown(self) -> None:
         """Cancel in-flight tasks. Call from FastAPI lifespan on app shutdown."""
         tasks = list(self._tasks.values())
@@ -109,6 +176,10 @@ class JobManager:
                 job.progress = 1.0
                 self._mark(job, status=JobStatus.COMPLETED)
                 log.info("job done id=%s file=%s", job.id, job.filename)
+            # Outside the semaphore — eviction shouldn't count against the
+            # concurrent-download budget, and it's safe because this job is
+            # already terminal.
+            await self.enforce_disk_quota(self._max_total_disk_bytes)
         except asyncio.CancelledError:
             self._mark(job, status=JobStatus.FAILED, error="cancelled")
             raise
