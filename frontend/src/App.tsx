@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { motion, useReducedMotion, AnimatePresence } from "motion/react"
 import {
   fileUrl,
@@ -838,39 +838,20 @@ const IOS_SAVE_TO_PHOTOS_SHORTCUT =
   "https://www.icloud.com/shortcuts/14e9aebf04b24156acc34ceccf7e6fcd"
 
 function SaveButton({ job }: { job: JobResponse }) {
-  // iOS PWA standalone mode silently ignores the `download` attribute and
-  // navigates the PWA window to the file URL — landing the user in QuickLook
-  // ("Open in WhatsApp / More") with no way back. window.open works but
-  // leaves a blank Safari tab behind. A hidden iframe whose src is an
-  // attachment URL triggers the download via the platform's native handler
-  // without spawning a visible window, then we drop the iframe so memory is
-  // reclaimed. Classic FileSaver.js pattern.
-  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    if (typeof window === "undefined") return
-    const isIos = /iphone|ipad|ipod/i.test(window.navigator.userAgent)
-    const standalone =
-      window.matchMedia("(display-mode: standalone)").matches ||
+  const isIosPwa =
+    typeof window !== "undefined" &&
+    /iphone|ipad|ipod/i.test(window.navigator.userAgent) &&
+    (window.matchMedia("(display-mode: standalone)").matches ||
       ("standalone" in window.navigator &&
-        (window.navigator as { standalone?: boolean }).standalone === true)
-    if (!(isIos && standalone)) return
+        (window.navigator as { standalone?: boolean }).standalone === true))
 
-    e.preventDefault()
-    const url = fileUrl(job.id)
-    const iframe = document.createElement("iframe")
-    iframe.style.display = "none"
-    iframe.src = url
-    document.body.appendChild(iframe)
-    // Clean up after a generous delay — iOS needs the iframe alive long
-    // enough for the platform download handler to take over.
-    window.setTimeout(() => iframe.remove(), 60_000)
-  }
+  if (isIosPwa) return <IosPwaShareButton job={job} />
 
   return (
     <div className="flex-1">
       <a
         href={fileUrl(job.id)}
         download={job.filename ?? undefined}
-        onClick={handleClick}
         className="block rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
       >
         ★ save{" "}
@@ -878,6 +859,145 @@ function SaveButton({ job }: { job: JobResponse }) {
           影片
         </span>
       </a>
+      <IosPhotosHint />
+    </div>
+  )
+}
+
+/* iOS PWA standalone uses navigator.share({ files }) — the same path        */
+/* cobalt.tools uses for local Files <256 MB. Pre-fetches the file as a      */
+/* Blob in the background; on click calls navigator.share synchronously so   */
+/* iOS retains the user-activation gesture. Slow for large files (iOS spec   */
+/* limitation, not ours) but it actually pulls bytes onto the device — which */
+/* nothing else does cleanly from an installed iOS PWA.                      */
+
+type ShareReadyState = "preparing" | "ready" | "sharing" | "no-share"
+
+// Only pre-fetch + file-share if the job is under this size. iOS holds the
+// entire blob in browser RAM for the share IPC; above ~256 MB iOS Safari
+// will frequently OOM the tab. 512 MB is the upper limit we'll attempt
+// before falling back to the anchor download.
+const IOS_SHARE_MAX_BYTES = 512 * 1024 * 1024
+
+function IosPwaShareButton({ job }: { job: JobResponse }) {
+  const fileRef = useRef<File | null>(null)
+  const tooBig =
+    typeof job.filesize === "number" && job.filesize > IOS_SHARE_MAX_BYTES
+  const [state, setState] = useState<ShareReadyState>(() => {
+    if (tooBig) return "no-share"
+    return typeof navigator !== "undefined" &&
+      typeof navigator.canShare === "function"
+      ? "preparing"
+      : "no-share"
+  })
+
+  useEffect(() => {
+    if (state !== "preparing") return
+    const ac = new AbortController()
+    ;(async () => {
+      try {
+        const res = await fetch(fileUrl(job.id), { signal: ac.signal })
+        if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
+        const blob = await res.blob()
+        const file = new File([blob], job.filename ?? "video.mp4", {
+          type: blob.type || "video/mp4",
+        })
+        if (
+          typeof navigator.canShare === "function" &&
+          navigator.canShare({ files: [file] })
+        ) {
+          fileRef.current = file
+          setState("ready")
+        } else {
+          setState("no-share")
+        }
+      } catch (err) {
+        const name = (err as { name?: string })?.name
+        if (name !== "AbortError") setState("no-share")
+      }
+    })()
+    return () => ac.abort()
+  }, [state, job.id, job.filename])
+
+  const handleShare = () => {
+    if (state === "sharing") {
+      // Tap-to-cancel: unstick our UI; iOS keeps its sheet up regardless.
+      setState("ready")
+      return
+    }
+    if (state !== "ready" || !fileRef.current) return
+    const file = fileRef.current
+    setState("sharing")
+    // 60s watchdog — share usually settles, but tab backgrounding or Low
+    // Power Mode can leave it pending.
+    const watchdog = window.setTimeout(() => setState("ready"), 60_000)
+    void navigator
+      .share({ files: [file], title: job.title ?? "video" })
+      .catch((err) => {
+        const name = (err as { name?: string })?.name
+        if (name && name !== "AbortError") {
+          console.warn("share rejected:", name, err)
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(watchdog)
+        setState("ready")
+      })
+  }
+
+  if (state === "no-share") {
+    // Browser claims canShare but rejected the file (codec / size). Fall
+    // back to the plain anchor download.
+    return (
+      <div className="flex-1">
+        <a
+          href={fileUrl(job.id)}
+          download={job.filename ?? undefined}
+          className="block rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
+        >
+          ★ save{" "}
+          <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+            影片
+          </span>
+        </a>
+        <IosPhotosHint />
+      </div>
+    )
+  }
+
+  const label =
+    state === "preparing" ? (
+      <span className="inline-flex items-center gap-2 opacity-80">
+        <Spinner />
+        preparing share…
+      </span>
+    ) : state === "sharing" ? (
+      <span className="inline-flex items-center gap-2">
+        <Spinner />
+        sharing… tap to cancel
+      </span>
+    ) : (
+      <>
+        ⤴ share{" "}
+        <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+          影片
+        </span>
+      </>
+    )
+
+  return (
+    <div className="flex-1">
+      <button
+        type="button"
+        onClick={handleShare}
+        disabled={state === "preparing"}
+        className="block w-full rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90 disabled:opacity-60"
+      >
+        {label}
+      </button>
+      <p className="mt-1.5 text-center text-[11px] leading-snug text-[var(--subtle)]">
+        in app mode · iOS share sheet · big files take 20–60s
+      </p>
       <IosPhotosHint />
     </div>
   )
