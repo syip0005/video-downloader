@@ -14,8 +14,8 @@
   --color-shadow: #2a1f4d;
 
   --font-sans: "DM Sans", "Noto Sans TC", system-ui, -apple-system, sans-serif;
-  --font-mono: "DM Mono", "Noto Sans TC", ui-monospace, monospace;
-  --font-pixel: "DM Mono", "Noto Sans TC", ui-monospace, monospace;
+  --font-mono: "DM Sans", "Noto Sans TC", system-ui, sans-serif;
+  --font-pixel: "DM Sans", "Noto Sans TC", system-ui, sans-serif;
   --font-tc: "Noto Sans TC", "DM Sans", system-ui, sans-serif;
 }
 

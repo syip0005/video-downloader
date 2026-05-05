@@ -18,11 +18,12 @@ log = logging.getLogger(__name__)
 
 
 async def _cleanup_loop(manager: JobManager, settings: Settings) -> None:
-    """Periodically evict expired jobs. Owned by the lifespan."""
+    """Periodically evict expired jobs and enforce the disk quota."""
     while True:
         try:
             await asyncio.sleep(settings.cleanup_interval_seconds)
             await manager.cleanup(settings.job_ttl_seconds)
+            await manager.enforce_disk_quota(settings.max_total_disk_bytes)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         download_dir=settings.download_dir,
         max_filesize_bytes=settings.max_filesize_bytes,
         max_duration_seconds=settings.max_duration_seconds,
+        max_total_disk_bytes=settings.max_total_disk_bytes,
     )
     app.state.job_manager = manager
 

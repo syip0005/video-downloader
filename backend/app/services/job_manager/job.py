@@ -10,6 +10,7 @@ class Job:
     id: str
     url: str
     format: DownloadFormat
+    format_id: str | None = None
     status: JobStatus = JobStatus.QUEUED
     progress: float = 0.0
     title: str | None = None

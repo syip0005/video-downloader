@@ -15,6 +15,11 @@ class Settings(BaseSettings):
     max_filesize_bytes: int = 8 * 1024 * 1024 * 1024  # 8 GiB
     max_duration_seconds: int = 6 * 60 * 60  # 6 hours
 
+    # Aggregate cap across all completed downloads on disk. When the total
+    # exceeds this, the oldest terminal jobs are evicted (files unlinked,
+    # registry entries dropped) until usage is back under the cap.
+    max_total_disk_bytes: int = 64 * 1024 * 1024 * 1024  # 64 GiB
+
     # Completed/failed jobs older than this are evicted; their files unlinked.
     job_ttl_seconds: int = 60 * 60 * 6
     cleanup_interval_seconds: int = 15 * 60

@@ -5,7 +5,14 @@ from fastapi.responses import FileResponse
 
 from app.api.deps import JobManagerDep
 from app.core.exceptions import JobNotFound
-from app.schemas import DownloadRequest, JobResponse
+from app.schemas import (
+    DownloadRequest,
+    FormatInfo,
+    JobResponse,
+    ProbeRequest,
+    ProbeResponse,
+)
+from app.services.downloader import probe as probe_url
 from app.services.job_manager import Job
 
 router = APIRouter(prefix="/downloads", tags=["downloads"])
@@ -16,6 +23,7 @@ def _to_response(job: Job) -> JobResponse:
         id=job.id,
         url=job.url,
         format=job.format,
+        format_id=job.format_id,
         status=job.status.value,
         progress=job.progress,
         title=job.title,
@@ -35,8 +43,24 @@ def _to_response(job: Job) -> JobResponse:
     summary="Submit a URL for download",
 )
 async def create_download(payload: DownloadRequest, manager: JobManagerDep) -> JobResponse:
-    job = await manager.enqueue(str(payload.url), payload.format)
+    job = await manager.enqueue(str(payload.url), payload.format, payload.format_id)
     return _to_response(job)
+
+
+@router.post(
+    "/probe",
+    response_model=ProbeResponse,
+    summary="Inspect a URL and list available formats",
+)
+async def probe_download(payload: ProbeRequest) -> ProbeResponse:
+    result = await probe_url(str(payload.url))
+    return ProbeResponse(
+        title=result.title,
+        thumbnail=result.thumbnail,
+        duration=result.duration,
+        is_live=result.is_live,
+        formats=[FormatInfo(**vars(f)) for f in result.formats],
+    )
 
 
 @router.get("", response_model=list[JobResponse], summary="List all jobs (newest first)")

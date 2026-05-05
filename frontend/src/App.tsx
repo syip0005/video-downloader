@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { motion, useReducedMotion, AnimatePresence } from "motion/react"
-import { fileUrl, type JobResponse } from "./api"
+import { fileUrl, type JobResponse, type ProbeFormat, type ProbeResponse } from "./api"
 import { useDownload } from "./useDownload"
 
 type Theme = "light" | "dark"
@@ -24,7 +24,7 @@ export default function App() {
   }, [theme])
 
   return (
-    <main className="relative grid min-h-dvh place-items-center overflow-hidden px-5 text-[var(--fg)]">
+    <main className="relative grid min-h-dvh place-items-center overflow-hidden px-5 py-10 text-[var(--fg)]">
       <div className="absolute inset-0 bg-dots opacity-50" />
       <div
         className="float-y absolute -top-24 -left-24 h-72 w-72 rounded-full bg-bubble blur-3xl opacity-50 dark:opacity-25"
@@ -48,7 +48,7 @@ export default function App() {
 /* -------------------------------------------------------------------------- */
 
 function Hero() {
-  const { state, submit, reset } = useDownload()
+  const { state, probe, pick, back, reset } = useDownload()
 
   return (
     <motion.section
@@ -75,35 +75,39 @@ function Hero() {
       </p>
 
       <p className="mx-auto mt-5 max-w-sm text-[15px] leading-relaxed text-[var(--muted)]">
-        paste a link, keep the video. a tiny self-hosted downloader 媽 would
-        actually use.
+        paste a link, keep the video.
+        <br />
+        <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+          媽，下載條片啦，加油！
+        </span>
       </p>
 
       <div className="mt-9">
         <AnimatePresence mode="wait" initial={false}>
-          {state.phase === "idle" || state.phase === "submitting" ? (
-            <motion.div
-              key="form"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25 }}
-            >
+          {state.phase === "idle" || state.phase === "probing" ? (
+            <Stage key="form">
               <PasteForm
-                submitting={state.phase === "submitting"}
-                onSubmit={submit}
+                submitting={state.phase === "probing"}
+                onSubmit={probe}
               />
-            </motion.div>
+            </Stage>
+          ) : state.phase === "picking" || state.phase === "submitting" ? (
+            <Stage key="picker">
+              <FormatPicker
+                probe={state.probe!}
+                submitting={state.phase === "submitting"}
+                onPick={pick}
+                onBack={reset}
+              />
+            </Stage>
           ) : (
-            <motion.div
-              key="job"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              transition={{ duration: 0.25 }}
-            >
-              <JobPanel state={state} onReset={reset} />
-            </motion.div>
+            <Stage key="job">
+              <JobPanel
+                state={state}
+                onReset={reset}
+                onPickAgain={state.probe ? back : undefined}
+              />
+            </Stage>
           )}
         </AnimatePresence>
       </div>
@@ -112,6 +116,23 @@ function Hero() {
         yt-dlp · 自家託管 · ios-friendly
       </p>
     </motion.section>
+  )
+}
+
+function Stage({
+  children,
+  ...rest
+}: React.PropsWithChildren<Record<string, unknown>>) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.25 }}
+      {...rest}
+    >
+      {children}
+    </motion.div>
   )
 }
 
@@ -159,12 +180,9 @@ function PasteForm({
         {submitting ? (
           <Spinner />
         ) : (
-          <>
-            <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
-              下載
-            </span>
-            <span className="ml-1.5">→</span>
-          </>
+          <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+            找一找 →
+          </span>
         )}
       </motion.button>
     </form>
@@ -173,15 +191,291 @@ function PasteForm({
 
 /* -------------------------------------------------------------------------- */
 
+interface PickerOption {
+  key: string
+  label: string
+  detail: string
+  size: number | null
+  formatId?: string
+  format?: "best" | "audio"
+}
+
+function FormatPicker({
+  probe,
+  submitting,
+  onPick,
+  onBack,
+}: {
+  probe: ProbeResponse
+  submitting: boolean
+  onPick: (opts: { format?: "best" | "audio"; formatId?: string }) => void
+  onBack: () => void
+}) {
+  const groups = useMemo(() => groupFormats(probe.formats), [probe.formats])
+  const reduce = useReducedMotion()
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+
+  return (
+    <div
+      className="overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-left"
+      style={{ boxShadow: "var(--shadow-ambient)" }}
+    >
+      <header className="flex items-center gap-3 p-3">
+        <Thumb thumbnail={probe.thumbnail} title={probe.title} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-sm font-semibold">
+            {probe.title ?? "untitled"}
+          </div>
+          <div className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--subtle)]">
+            {probe.duration ? formatDuration(probe.duration) : "—"}
+          </div>
+        </div>
+      </header>
+
+      {/* Primary CTA — the obvious default path */}
+      <div className="px-3 pb-3">
+        <motion.button
+          whileHover={reduce || submitting ? undefined : { y: -1 }}
+          whileTap={reduce || submitting ? undefined : { y: 1 }}
+          onClick={() => onPick({ format: "best" })}
+          disabled={submitting}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--fg)] px-4 py-3.5 text-base font-semibold text-[var(--bg)] transition hover:opacity-90 disabled:opacity-40"
+        >
+          {submitting ? (
+            <Spinner />
+          ) : (
+            <>
+              <span>★</span>
+              <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+                下載
+              </span>
+              <span>· best quality</span>
+            </>
+          )}
+        </motion.button>
+        <p className="mt-2 text-center font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--subtle)]">
+          we pick the highest available
+        </p>
+      </div>
+
+      {/* Advanced disclosure */}
+      <div className="border-t border-[var(--border)]">
+        <button
+          onClick={() => setAdvancedOpen((v) => !v)}
+          disabled={submitting}
+          className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left transition hover:bg-[var(--bg)] disabled:opacity-40"
+          aria-expanded={advancedOpen}
+        >
+          <span className="font-mono text-[11px] uppercase tracking-[0.18em] text-[var(--muted)]">
+            advanced · pick a format
+          </span>
+          <motion.span
+            animate={{ rotate: advancedOpen ? 180 : 0 }}
+            transition={{ duration: 0.2 }}
+            className="text-xs text-[var(--subtle)]"
+          >
+            ▾
+          </motion.span>
+        </button>
+
+        <AnimatePresence initial={false}>
+          {advancedOpen ? (
+            <motion.div
+              key="advanced"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+              className="overflow-hidden"
+            >
+              <div className="max-h-[45vh] overflow-y-auto border-t border-[var(--border)]">
+                {groups.video.length > 0 ? (
+                  <PickerSection title="video">
+                    {groups.video.map((opt) => (
+                      <PickerRow
+                        key={opt.key}
+                        label={opt.label}
+                        detail={opt.detail}
+                        size={opt.size}
+                        disabled={submitting}
+                        onClick={() => onPick({ formatId: opt.formatId })}
+                      />
+                    ))}
+                  </PickerSection>
+                ) : null}
+
+                {groups.audio.length > 0 ? (
+                  <PickerSection title="audio only">
+                    {groups.audio.map((opt) => (
+                      <PickerRow
+                        key={opt.key}
+                        label={opt.label}
+                        detail={opt.detail}
+                        size={opt.size}
+                        disabled={submitting}
+                        onClick={() => onPick({ formatId: opt.formatId })}
+                      />
+                    ))}
+                  </PickerSection>
+                ) : null}
+              </div>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+      </div>
+
+      <footer className="flex items-center justify-between gap-2 border-t border-[var(--border)] p-3">
+        <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--subtle)]">
+          {submitting ? "starting…" : `${probe.formats.length} formats`}
+        </span>
+        <button
+          onClick={onBack}
+          disabled={submitting}
+          className="shrink-0 rounded-xl border border-[var(--border)] px-3 py-2 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--bg)] disabled:opacity-40"
+        >
+          ← new{" "}
+          <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+            連結
+          </span>
+        </button>
+      </footer>
+    </div>
+  )
+}
+
+function PickerSection({
+  title,
+  children,
+}: {
+  title: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="border-t border-[var(--border)]">
+      <div className="px-3 pt-3 pb-1 font-mono text-[10px] uppercase tracking-[0.2em] text-[var(--subtle)]">
+        {title}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function PickerRow({
+  label,
+  detail,
+  size,
+  accent,
+  disabled,
+  onClick,
+}: {
+  label: string
+  detail?: string
+  size?: number | null
+  accent?: string
+  disabled?: boolean
+  onClick: () => void
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-[var(--bg)] disabled:opacity-40"
+    >
+      {accent ? (
+        <span className={`h-2 w-2 shrink-0 rounded-full ${accent}`} />
+      ) : null}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium">{label}</div>
+        {detail ? (
+          <div className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--subtle)]">
+            {detail}
+          </div>
+        ) : null}
+      </div>
+      {size != null ? (
+        <span className="shrink-0 font-mono text-[11px] text-[var(--muted)]">
+          {formatBytes(size)}
+        </span>
+      ) : null}
+      <span className="text-[var(--subtle)]">→</span>
+    </button>
+  )
+}
+
+/* Format grouping --------------------------------------------------------- */
+
+function groupFormats(formats: ProbeFormat[]): {
+  video: PickerOption[]
+  audio: PickerOption[]
+} {
+  const videoCandidates = formats.filter((f) => f.has_video)
+  const audioCandidates = formats.filter((f) => !f.has_video && f.has_audio)
+
+  // Dedupe video by height — keep largest filesize per height bucket.
+  const byHeight = new Map<number, ProbeFormat>()
+  for (const f of videoCandidates) {
+    const h = f.height ?? 0
+    const existing = byHeight.get(h)
+    const size = effectiveSize(f) ?? 0
+    const existingSize = existing ? effectiveSize(existing) ?? 0 : -1
+    if (!existing || size > existingSize) byHeight.set(h, f)
+  }
+
+  const video: PickerOption[] = [...byHeight.values()]
+    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))
+    .map((f) => ({
+      key: f.format_id,
+      label: f.height ? `${f.height}p` : f.resolution ?? f.ext,
+      detail: [f.ext, f.fps ? `${f.fps}fps` : null, f.format_note]
+        .filter(Boolean)
+        .join(" · "),
+      size: effectiveSize(f),
+      formatId: f.format_id,
+    }))
+
+  // Dedupe audio by abr bucket, sorted desc.
+  const byAbr = new Map<number, ProbeFormat>()
+  for (const f of audioCandidates) {
+    const k = Math.round((f.abr ?? f.tbr ?? 0) / 16) * 16
+    const existing = byAbr.get(k)
+    const size = effectiveSize(f) ?? 0
+    const existingSize = existing ? effectiveSize(existing) ?? 0 : -1
+    if (!existing || size > existingSize) byAbr.set(k, f)
+  }
+
+  const audio: PickerOption[] = [...byAbr.values()]
+    .sort((a, b) => (b.abr ?? 0) - (a.abr ?? 0))
+    .map((f) => ({
+      key: f.format_id,
+      label: f.abr ? `${Math.round(f.abr)} kbps` : f.ext,
+      detail: [f.ext, f.format_note].filter(Boolean).join(" · "),
+      size: effectiveSize(f),
+      formatId: f.format_id,
+    }))
+
+  return { video, audio }
+}
+
+function effectiveSize(f: ProbeFormat): number | null {
+  return f.filesize ?? f.filesize_approx ?? null
+}
+
+/* -------------------------------------------------------------------------- */
+
 function JobPanel({
   state,
   onReset,
+  onPickAgain,
 }: {
   state: ReturnType<typeof useDownload>["state"]
   onReset: () => void
+  onPickAgain?: () => void
 }) {
-  const { phase, job, error } = state
+  const { phase, job, error, probe } = state
   const progressPct = Math.round(((job?.progress ?? 0) as number) * 100)
+
+  const title = job?.title ?? probe?.title ?? null
+  const thumb = job?.thumbnail ?? probe?.thumbnail ?? null
 
   return (
     <div
@@ -189,14 +483,15 @@ function JobPanel({
       style={{ boxShadow: "var(--shadow-ambient)" }}
     >
       <div className="flex items-center gap-3 p-3">
-        <Thumb job={job} />
+        <Thumb thumbnail={thumb} title={title} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold">
-            {job?.title ?? (phase === "error" ? "couldn't start" : "fetching info…")}
+            {title ?? (phase === "error" ? "couldn't start" : "fetching info…")}
           </div>
           <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--subtle)]">
             <StatusDot phase={phase} status={job?.status} />
             <span>{statusLabel(phase, job?.status)}</span>
+            {job?.format_id ? <span>· {job.format_id}</span> : null}
             {job?.filesize ? <span>· {formatBytes(job.filesize)}</span> : null}
           </div>
         </div>
@@ -230,6 +525,14 @@ function JobPanel({
             {progressPct}% · please wait
           </span>
         )}
+        {onPickAgain && (phase === "done" || phase === "error") ? (
+          <button
+            onClick={onPickAgain}
+            className="shrink-0 rounded-xl border border-[var(--border)] px-3 py-2 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--bg)]"
+          >
+            pick again
+          </button>
+        ) : null}
         <button
           onClick={onReset}
           className="shrink-0 rounded-xl border border-[var(--border)] px-3 py-2 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--bg)]"
@@ -250,12 +553,18 @@ function JobPanel({
   )
 }
 
-function Thumb({ job }: { job: JobResponse | null }) {
-  if (job?.thumbnail) {
+function Thumb({
+  thumbnail,
+  title,
+}: {
+  thumbnail: string | null
+  title?: string | null
+}) {
+  if (thumbnail) {
     return (
       <img
-        src={job.thumbnail}
-        alt=""
+        src={thumbnail}
+        alt={title ?? ""}
         className="h-12 w-12 shrink-0 rounded-lg border border-[var(--border)] object-cover"
       />
     )
@@ -331,7 +640,7 @@ function StatusDot({
 }
 
 function statusLabel(phase: string, status?: JobResponse["status"]): string {
-  if (phase === "submitting") return "submitting"
+  if (phase === "submitting") return "starting"
   if (phase === "done") return "ready"
   if (phase === "error") return "failed"
   if (status === "queued") return "queued"
@@ -344,6 +653,15 @@ function formatBytes(n: number): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`
+}
+
+function formatDuration(seconds: number): string {
+  const s = Math.round(seconds)
+  const h = Math.floor(s / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  const sec = s % 60
+  if (h) return `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`
+  return `${m}:${sec.toString().padStart(2, "0")}`
 }
 
 /* -------------------------------------------------------------------------- */

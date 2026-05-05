@@ -6,6 +6,7 @@ export interface JobResponse {
   id: string
   url: string
   format: DownloadFormat
+  format_id: string | null
   status: JobStatus
   progress: number
   title: string | null
@@ -15,6 +16,30 @@ export interface JobResponse {
   error: string | null
   created_at: number
   updated_at: number
+}
+
+export interface ProbeFormat {
+  format_id: string
+  ext: string
+  resolution: string | null
+  height: number | null
+  fps: number | null
+  vcodec: string | null
+  acodec: string | null
+  filesize: number | null
+  filesize_approx: number | null
+  tbr: number | null
+  abr: number | null
+  format_note: string | null
+  has_video: boolean
+  has_audio: boolean
+}
+
+export interface ProbeResponse {
+  title: string | null
+  thumbnail: string | null
+  duration: number | null
+  formats: ProbeFormat[]
 }
 
 export class ApiError extends Error {
@@ -44,13 +69,23 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+export function probeDownload(url: string): Promise<ProbeResponse> {
+  return request<ProbeResponse>("/api/downloads/probe", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  })
+}
+
 export function createDownload(
   url: string,
-  format: DownloadFormat = "best",
+  opts: { format?: DownloadFormat; formatId?: string } = {},
 ): Promise<JobResponse> {
+  const body: Record<string, unknown> = { url }
+  if (opts.format) body.format = opts.format
+  if (opts.formatId) body.format_id = opts.formatId
   return request<JobResponse>("/api/downloads", {
     method: "POST",
-    body: JSON.stringify({ url, format }),
+    body: JSON.stringify(body),
   })
 }
 
