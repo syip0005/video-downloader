@@ -34,11 +34,11 @@ export default function App() {
     <main className="relative grid min-h-dvh place-items-center overflow-hidden px-5 py-10 text-[var(--fg)]">
       <div className="absolute inset-0 bg-dots opacity-50" />
       <div
-        className="float-y absolute -top-24 -left-24 h-72 w-72 rounded-full bg-bubble blur-3xl opacity-50 dark:opacity-25"
+        className="float-y absolute -top-40 -left-40 h-56 w-56 rounded-full bg-bubble blur-3xl opacity-50 dark:opacity-25 sm:-top-24 sm:-left-24 sm:h-72 sm:w-72"
         style={{ ["--rot" as never]: "0deg" }}
       />
       <div
-        className="float-y absolute -bottom-28 -right-20 h-80 w-80 rounded-full bg-cyan blur-3xl opacity-40 dark:opacity-20"
+        className="float-y absolute -bottom-44 -right-44 h-60 w-60 rounded-full bg-cyan blur-3xl opacity-40 dark:opacity-20 sm:-bottom-28 sm:-right-20 sm:h-80 sm:w-80"
         style={{ ["--rot" as never]: "0deg", animationDelay: "1.6s" }}
       />
 
@@ -880,14 +880,11 @@ function SaveButton({ job }: { job: JobResponse }) {
     const file = fileRef.current
     setShareState("sharing")
     // Call navigator.share synchronously so iOS retains user activation.
+    // Never fall back to a synthetic anchor click on rejection — on iOS that
+    // enters QuickLook preview mode which the user can't dismiss.
     void navigator
       .share({ files: [file], title: job.title ?? "video" })
-      .then(() => setShareState("ready"))
-      .catch((err) => {
-        setShareState("ready")
-        // User cancelled the sheet — do nothing. Real failures: fall back.
-        if (!isAbort(err)) triggerAnchor(fileUrl(job.id), job.filename)
-      })
+      .finally(() => setShareState("ready"))
   }
 
   const label =
@@ -909,25 +906,27 @@ function SaveButton({ job }: { job: JobResponse }) {
     )
 
   return (
-    <a
-      href={fileUrl(job.id)}
-      download={job.filename ?? undefined}
-      onClick={handleClick}
-      aria-disabled={shareState === "sharing" ? true : undefined}
-      className="flex-1 rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
-    >
-      {label}
-    </a>
+    <div className="flex-1">
+      <a
+        href={fileUrl(job.id)}
+        download={job.filename ?? undefined}
+        onClick={handleClick}
+        aria-disabled={shareState === "sharing" ? true : undefined}
+        className="block rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
+      >
+        {label}
+      </a>
+      {shareState === "ready" || shareState === "sharing" ? (
+        <a
+          href={fileUrl(job.id)}
+          download={job.filename ?? undefined}
+          className="mt-1.5 block text-center text-[11px] font-mono uppercase tracking-[0.14em] text-[var(--subtle)] hover:text-[var(--muted)]"
+        >
+          or save to files →
+        </a>
+      ) : null}
+    </div>
   )
-}
-
-function triggerAnchor(url: string, filename: string | null) {
-  const a = document.createElement("a")
-  a.href = url
-  if (filename) a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
 }
 
 function isAbort(err: unknown): boolean {
