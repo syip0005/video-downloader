@@ -1001,6 +1001,7 @@ function sanitizeFilename(name: string): string {
 
 function IosShareButton({ job }: { job: JobResponse }) {
   const fileRef = useRef<File | null>(null)
+  const opfsHandleRef = useRef<FileSystemFileHandle | null>(null)
   const tooBig =
     typeof job.filesize === "number" && job.filesize > IOS_SHARE_MAX_BYTES
   const [state, setState] = useState<ShareReadyState>(() => {
@@ -1012,10 +1013,19 @@ function IosShareButton({ job }: { job: JobResponse }) {
   })
   const [errMsg, setErrMsg] = useState<string | null>(null)
 
+  // Materialize runs once per job — NOT every time state changes. If state
+  // were in deps, transitioning preparing → ready would re-run the effect,
+  // fire the cleanup, and (if cleanup deleted the OPFS file) hand the
+  // share path a File backed by a dead inode.
   useEffect(() => {
-    if (state !== "preparing") return
+    if (tooBig) return
+    if (
+      typeof navigator === "undefined" ||
+      typeof navigator.canShare !== "function"
+    ) {
+      return
+    }
     const ac = new AbortController()
-    let opfsHandle: FileSystemFileHandle | null = null
     ;(async () => {
       try {
         const filename = sanitizeFilename(job.filename ?? "video.mp4")
@@ -1024,7 +1034,7 @@ function IosShareButton({ job }: { job: JobResponse }) {
           filename,
           ac.signal,
           (h) => {
-            opfsHandle = h
+            opfsHandleRef.current = h
           },
         )
         if (
@@ -1053,20 +1063,28 @@ function IosShareButton({ job }: { job: JobResponse }) {
       }
     })()
     return () => {
+      // Just abort the in-flight fetch/worker. Do NOT delete the staged
+      // OPFS file here — fileRef may be holding a File backed by it.
       ac.abort()
-      if (opfsHandle) {
-        const handle = opfsHandle
-        void (async () => {
-          try {
-            const dir = await getStagingDir()
-            if (dir) await dir.removeEntry(handle.name)
-          } catch {
-            /* ignore */
-          }
-        })()
-      }
     }
-  }, [state, job.id, job.filename])
+  }, [job.id, job.filename, tooBig])
+
+  // Cleanup the OPFS file only on real unmount.
+  useEffect(() => {
+    return () => {
+      const handle = opfsHandleRef.current
+      if (!handle) return
+      opfsHandleRef.current = null
+      void (async () => {
+        try {
+          const dir = await getStagingDir()
+          if (dir) await dir.removeEntry(handle.name)
+        } catch {
+          /* ignore */
+        }
+      })()
+    }
+  }, [])
 
   const handleShare = () => {
     if (state === "sharing") {
