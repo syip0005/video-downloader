@@ -21,6 +21,11 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    # Path to the built Vite frontend (the `dist/` directory). When set and
+    # the directory exists, FastAPI serves it as the SPA at the root path.
+    # Leave None in development — the Vite dev server handles the frontend.
+    frontend_dist: Path | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

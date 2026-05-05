@@ -1,0 +1,30 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: video-downloader:latest
+    container_name: video-downloader
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist downloaded files across container restarts. Bind-mount to a
+      # host path you control so the files are easy to reach over SMB/AFP/etc.
+      - ./downloads:/data/downloads
+    environment:
+      VD_DOWNLOAD_DIR: /data/downloads
+      VD_FRONTEND_DIST: /app/frontend/dist
+      VD_LOG_LEVEL: INFO
+      # Tune limits here. Defaults are permissive for one user.
+      # VD_MAX_CONCURRENT_DOWNLOADS: 3
+      # VD_MAX_FILESIZE_BYTES: 8589934592   # 8 GiB
+      # VD_MAX_DURATION_SECONDS: 21600      # 6 hours
+      # VD_JOB_TTL_SECONDS: 21600           # 6 hours
+      # VD_CLEANUP_INTERVAL_SECONDS: 900    # 15 min
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status==200 else 1)\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

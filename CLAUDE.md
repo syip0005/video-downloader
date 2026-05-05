@@ -8,7 +8,7 @@ A self-hosted video downloader web app. Backend wraps `yt-dlp` and exposes a sma
 
 ## Layout
 
-- `backend/` — FastAPI app (`app/main.py` is the entrypoint), Python ≥3.11, managed with `uv`.
+- `backend/` — FastAPI app (`app/main.py` is the entrypoint), Python ≥3.13, managed with `uv`.
 - `frontend/` — Vite + React 19 + TypeScript + Tailwind CSS v4.
 
 ## Commands

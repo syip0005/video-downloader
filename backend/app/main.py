@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
@@ -72,6 +73,17 @@ def create_app() -> FastAPI:
 
     register_exception_handlers(app)
     app.include_router(api_router)
+
+    # Mount the built SPA last so /api/* routes win. `html=True` serves
+    # index.html for unknown paths so client-side routing works.
+    if settings.frontend_dist is not None and settings.frontend_dist.is_dir():
+        app.mount(
+            "/",
+            StaticFiles(directory=settings.frontend_dist, html=True),
+            name="frontend",
+        )
+        log.info("serving frontend from %s", settings.frontend_dist)
+
     return app
 
 
