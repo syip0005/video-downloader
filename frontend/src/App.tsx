@@ -839,11 +839,12 @@ const IOS_SAVE_TO_PHOTOS_SHORTCUT =
 
 function SaveButton({ job }: { job: JobResponse }) {
   // iOS PWA standalone mode silently ignores the `download` attribute and
-  // navigates the PWA window to the file URL instead, which lands the user
-  // in QuickLook ("Open in WhatsApp / More") with no way back. window.open
-  // bounces the URL out to Safari proper where the download tray works.
-  // Same workaround cobalt.tools uses (see web/src/lib/device.ts:
-  //   directDownload = !(installed && iOS)).
+  // navigates the PWA window to the file URL — landing the user in QuickLook
+  // ("Open in WhatsApp / More") with no way back. window.open works but
+  // leaves a blank Safari tab behind. A hidden iframe whose src is an
+  // attachment URL triggers the download via the platform's native handler
+  // without spawning a visible window, then we drop the iframe so memory is
+  // reclaimed. Classic FileSaver.js pattern.
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (typeof window === "undefined") return
     const isIos = /iphone|ipad|ipod/i.test(window.navigator.userAgent)
@@ -851,10 +852,17 @@ function SaveButton({ job }: { job: JobResponse }) {
       window.matchMedia("(display-mode: standalone)").matches ||
       ("standalone" in window.navigator &&
         (window.navigator as { standalone?: boolean }).standalone === true)
-    if (isIos && standalone) {
-      e.preventDefault()
-      window.open(fileUrl(job.id), "_blank", "noopener,noreferrer")
-    }
+    if (!(isIos && standalone)) return
+
+    e.preventDefault()
+    const url = fileUrl(job.id)
+    const iframe = document.createElement("iframe")
+    iframe.style.display = "none"
+    iframe.src = url
+    document.body.appendChild(iframe)
+    // Clean up after a generous delay — iOS needs the iframe alive long
+    // enough for the platform download handler to take over.
+    window.setTimeout(() => iframe.remove(), 60_000)
   }
 
   return (
