@@ -11,7 +11,7 @@ if ! command -v node >/dev/null 2>&1; then
     set +u
     # shellcheck disable=SC1091
     . "$HOME/.nvm/nvm.sh"
-    nvm use --lts >/dev/null
+    nvm use default >/dev/null 2>&1 || nvm use node >/dev/null
     set -u
   else
     echo "node not found and ~/.nvm/nvm.sh missing — install Node first." >&2
