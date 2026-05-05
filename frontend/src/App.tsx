@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { motion, useReducedMotion, AnimatePresence } from "motion/react"
-import { fileUrl, type JobResponse, type ProbeFormat, type ProbeResponse } from "./api"
+import {
+  fileUrl,
+  type DownloadFormat,
+  type JobResponse,
+  type ProbeFormat,
+  type ProbeResponse,
+} from "./api"
 import { useDownload } from "./useDownload"
 
 type Theme = "light" | "dark"
@@ -16,6 +22,7 @@ function getInitialTheme(): Theme {
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(getInitialTheme)
+  const [routePhase, setRoutePhase] = useState<"idle" | "busy">("idle")
 
   useEffect(() => {
     const root = document.documentElement
@@ -40,8 +47,8 @@ export default function App() {
         onToggle={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
       />
 
-      <Hero />
-      <PwaHint />
+      <Hero onPhaseChange={setRoutePhase} />
+      {routePhase === "idle" ? <PwaHint /> : null}
       <MiloCameo />
     </main>
   )
@@ -49,8 +56,16 @@ export default function App() {
 
 /* -------------------------------------------------------------------------- */
 
-function Hero() {
+function Hero({
+  onPhaseChange,
+}: {
+  onPhaseChange: (p: "idle" | "busy") => void
+}) {
   const { state, probe, pick, back, reset } = useDownload()
+
+  useEffect(() => {
+    onPhaseChange(state.phase === "idle" ? "idle" : "busy")
+  }, [state.phase, onPhaseChange])
 
   // Web Share Target: if launched via a share, the URL arrives in ?url= or
   // ?text= (iOS sometimes only fills text). Auto-probe and clean the URL.
@@ -262,7 +277,8 @@ interface PickerOption {
   detail: string
   size: number | null
   formatId?: string
-  format?: "best" | "audio"
+  format?: DownloadFormat
+  recommended?: boolean
 }
 
 function FormatPicker({
@@ -273,7 +289,7 @@ function FormatPicker({
 }: {
   probe: ProbeResponse
   submitting: boolean
-  onPick: (opts: { format?: "best" | "audio"; formatId?: string }) => void
+  onPick: (opts: { format?: DownloadFormat; formatId?: string }) => void
   onBack: () => void
 }) {
   const groups = useMemo(() => groupFormats(probe.formats), [probe.formats])
@@ -297,12 +313,12 @@ function FormatPicker({
         </div>
       </header>
 
-      {/* Primary CTA — the obvious default path */}
+      {/* Primary CTA — defaults to mp4_720p so it lands cleanly in iOS Photos */}
       <div className="px-3 pb-3">
         <motion.button
           whileHover={reduce || submitting ? undefined : { y: -1 }}
           whileTap={reduce || submitting ? undefined : { y: 1 }}
-          onClick={() => onPick({ format: "best" })}
+          onClick={() => onPick({ format: "mp4_720p" })}
           disabled={submitting}
           className="flex w-full items-center justify-center gap-2 rounded-xl bg-[var(--fg)] px-4 py-3.5 text-base font-semibold text-[var(--bg)] transition hover:opacity-90 disabled:opacity-40"
         >
@@ -314,12 +330,12 @@ function FormatPicker({
               <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
                 下載
               </span>
-              <span>· best quality</span>
+              <span>· 720p mp4</span>
             </>
           )}
         </motion.button>
         <p className="mt-2 text-center font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--subtle)]">
-          we pick the highest available
+          saves cleanly to Photos · ios-friendly
         </p>
       </div>
 
@@ -353,7 +369,14 @@ function FormatPicker({
               transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
               className="overflow-hidden"
             >
-              <div className="max-h-[45vh] overflow-y-auto border-t border-[var(--border)]">
+              <div
+                className="overflow-y-auto border-t border-[var(--border)]"
+                style={{
+                  maxHeight: "min(50vh, 360px)",
+                  WebkitOverflowScrolling: "touch",
+                  overscrollBehavior: "contain",
+                }}
+              >
                 {groups.video.length > 0 ? (
                   <PickerSection title="video">
                     {groups.video.map((opt) => (
@@ -362,6 +385,7 @@ function FormatPicker({
                         label={opt.label}
                         detail={opt.detail}
                         size={opt.size}
+                        recommended={opt.recommended}
                         disabled={submitting}
                         onClick={() => onPick({ formatId: opt.formatId })}
                       />
@@ -430,6 +454,7 @@ function PickerRow({
   detail,
   size,
   accent,
+  recommended,
   disabled,
   onClick,
 }: {
@@ -437,6 +462,7 @@ function PickerRow({
   detail?: string
   size?: number | null
   accent?: string
+  recommended?: boolean
   disabled?: boolean
   onClick: () => void
 }) {
@@ -444,13 +470,22 @@ function PickerRow({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-[var(--bg)] disabled:opacity-40"
+      className={`flex w-full items-center gap-2 px-3 py-2.5 text-left transition hover:bg-[var(--bg)] disabled:opacity-40 ${
+        recommended ? "bg-mint/15" : ""
+      }`}
     >
       {accent ? (
         <span className={`h-2 w-2 shrink-0 rounded-full ${accent}`} />
       ) : null}
       <div className="min-w-0 flex-1">
-        <div className="truncate text-sm font-medium">{label}</div>
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-medium">{label}</span>
+          {recommended ? (
+            <span className="shrink-0 rounded-full bg-mint px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-ink">
+              ios
+            </span>
+          ) : null}
+        </div>
         {detail ? (
           <div className="truncate font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--subtle)]">
             {detail}
@@ -462,7 +497,7 @@ function PickerRow({
           {formatBytes(size)}
         </span>
       ) : null}
-      <span className="text-[var(--subtle)]">→</span>
+      <span className="shrink-0 text-[var(--subtle)]">→</span>
     </button>
   )
 }
@@ -486,17 +521,28 @@ function groupFormats(formats: ProbeFormat[]): {
     if (!existing || size > existingSize) byHeight.set(h, f)
   }
 
-  const video: PickerOption[] = [...byHeight.values()]
-    .sort((a, b) => (b.height ?? 0) - (a.height ?? 0))
-    .map((f) => ({
-      key: f.format_id,
-      label: f.height ? `${f.height}p` : f.resolution ?? f.ext,
-      detail: [f.ext, f.fps ? `${f.fps}fps` : null, f.format_note]
-        .filter(Boolean)
-        .join(" · "),
-      size: effectiveSize(f),
-      formatId: f.format_id,
-    }))
+  const sortedVideo = [...byHeight.values()].sort(
+    (a, b) => (b.height ?? 0) - (a.height ?? 0),
+  )
+
+  // Tag the format closest to 720p (and ext=mp4 if possible) as recommended,
+  // since that's what saves to iOS Photos cleanly. Search for an mp4 first;
+  // fall back to whatever sits at <=720p.
+  const targetMp4 = sortedVideo.find(
+    (f) => f.ext === "mp4" && (f.height ?? 0) <= 720,
+  )
+  const target = targetMp4 ?? sortedVideo.find((f) => (f.height ?? 0) <= 720)
+
+  const video: PickerOption[] = sortedVideo.map((f) => ({
+    key: f.format_id,
+    label: f.height ? `${f.height}p` : f.resolution ?? f.ext,
+    detail: [f.ext, f.fps ? `${f.fps}fps` : null, f.format_note]
+      .filter(Boolean)
+      .join(" · "),
+    size: effectiveSize(f),
+    formatId: f.format_id,
+    recommended: target ? f.format_id === target.format_id : false,
+  }))
 
   // Dedupe audio by abr bucket, sorted desc.
   const byAbr = new Map<number, ProbeFormat>()
