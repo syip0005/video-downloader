@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,7 +14,19 @@ class DownloadResult:
     thumbnail: str | None
 
 
-def download(
+def _download_blocking(
+    url: str,
+    fmt: DownloadFormat,
+    *,
+    out_dir: Path,
+    out_id: str,
+    on_progress: ProgressCallback | None,
+) -> DownloadResult:
+    """Synchronous yt-dlp call. Do not call from the event loop directly."""
+    raise NotImplementedError
+
+
+async def download(
     url: str,
     fmt: DownloadFormat,
     *,
@@ -21,5 +34,7 @@ def download(
     out_id: str,
     on_progress: ProgressCallback | None = None,
 ) -> DownloadResult:
-    """Synchronously download `url` with yt-dlp. Caller offloads to a thread."""
-    raise NotImplementedError
+    """Async wrapper that offloads the blocking yt-dlp call to a worker thread."""
+    return await asyncio.to_thread(
+        _download_blocking, url, fmt, out_dir=out_dir, out_id=out_id, on_progress=on_progress
+    )
