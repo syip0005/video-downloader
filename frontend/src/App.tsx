@@ -914,20 +914,17 @@ async function getStagingDir(): Promise<FileSystemDirectoryHandle | null> {
 }
 
 /**
- * Stage a server response into an OPFS file and return the resulting
- * on-disk File. Critical for iOS: a File from
- * FileSystemFileHandle.getFile() is backed by a real inode in the OPFS
- * sandbox, so iOS' share extensions (Photos, Save Video, Shortcuts)
- * accept it. A `new File([blob], ...)` constructed from a fetched Blob is
- * an opaque in-memory object that those extensions silently reject —
- * leaving the user with the degenerate "Add to Shared Album / Find on
- * Amazon" sheet. Falls back to in-memory File if OPFS isn't available.
+ * Stage a server response into an OPFS file via a Web Worker (so we can
+ * use createSyncAccessHandle, the only OPFS write API that works
+ * reliably on iOS Safari) and return the resulting on-disk File.
  *
- * NB: We deliberately use `writable.write(blob)` rather than
- * `res.body.pipeTo(writable)` — `pipeTo` to FileSystemWritableFileStream
- * is flaky in the main thread on iOS Safari (it's only fully supported in
- * workers via createSyncAccessHandle). The blob path double-buffers in
- * RAM but works reliably; the size cap above keeps the buffer bounded.
+ * Critical for iOS: a File from FileSystemFileHandle.getFile() is backed
+ * by a real inode in the OPFS sandbox, so iOS' share extensions (Photos,
+ * Save Video, Shortcuts including the cobalt "Save to Photos" one)
+ * accept it. A `new File([blob], ...)` constructed from a fetched Blob
+ * is opaque to those extensions and gets silently rejected — leaving
+ * the user with the degenerate "Add to Shared Album / Find on Amazon"
+ * sheet. Falls back to in-memory File if OPFS isn't available.
  */
 async function materializeToOpfs(
   url: string,
@@ -935,33 +932,58 @@ async function materializeToOpfs(
   signal: AbortSignal,
   onHandle: (h: FileSystemFileHandle) => void,
 ): Promise<File> {
-  const res = await fetch(url, { signal })
-  if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
-  const blob = await res.blob()
-
   const dir = await getStagingDir()
   if (!dir) {
     // No OPFS — fall back to the in-memory File (Shortcut won't appear
     // but at least Save to Files / AirDrop / Messages still work).
+    const res = await fetch(url, { signal })
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
+    const blob = await res.blob()
     const type = blob.type || mimeFromFilename(filename)
     return new File([blob], filename, { type })
   }
 
-  const handle = await dir.getFileHandle(filename, { create: true })
+  await streamViaWorker(url, OPFS_STAGING_DIR, filename, signal)
+
+  const handle = await dir.getFileHandle(filename)
   onHandle(handle)
-  const writable = await handle.createWritable()
-  try {
-    await writable.write(blob)
-    await writable.close()
-  } catch (err) {
-    try {
-      await writable.abort()
-    } catch {
-      /* ignore */
-    }
-    throw err
-  }
   return await handle.getFile()
+}
+
+async function streamViaWorker(
+  url: string,
+  dirName: string,
+  filename: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const worker = new Worker(
+    new URL("./share-stager.worker.ts", import.meta.url),
+    { type: "module" },
+  )
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort)
+        reject(new DOMException("aborted", "AbortError"))
+      }
+      worker.addEventListener(
+        "message",
+        (e: MessageEvent) => {
+          const data = e.data as { ok?: boolean; error?: string }
+          if (data?.ok) resolve()
+          else reject(new Error(data?.error ?? "share worker failed"))
+        },
+        { once: true },
+      )
+      worker.addEventListener("error", (e) => {
+        reject(new Error(e.message ?? "share worker crashed"))
+      })
+      signal.addEventListener("abort", onAbort)
+      worker.postMessage({ type: "init", url, dirName, filename })
+    })
+  } finally {
+    worker.terminate()
+  }
 }
 
 // OPFS getFileHandle rejects "/" and "\" in names. yt-dlp output can
