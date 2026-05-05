@@ -869,7 +869,7 @@ function SaveButton({ job }: { job: JobResponse }) {
 /* video — which is how the cobalt "Save to Photos" shortcut becomes a       */
 /* one-tap destination once the user installs it.                            */
 
-type ShareReadyState = "preparing" | "ready" | "sharing" | "no-share"
+type ShareReadyState = "preparing" | "ready" | "sharing" | "no-share" | "error"
 
 // Pre-fetch + file-share gate. iOS holds the entire blob in tab RAM for the
 // share IPC; above ~256 MB it frequently OOMs the tab. 512 MB is the upper
@@ -914,14 +914,20 @@ async function getStagingDir(): Promise<FileSystemDirectoryHandle | null> {
 }
 
 /**
- * Stream a server response straight into an OPFS file and return the
- * resulting on-disk File. Critical for iOS: a File from
+ * Stage a server response into an OPFS file and return the resulting
+ * on-disk File. Critical for iOS: a File from
  * FileSystemFileHandle.getFile() is backed by a real inode in the OPFS
  * sandbox, so iOS' share extensions (Photos, Save Video, Shortcuts)
  * accept it. A `new File([blob], ...)` constructed from a fetched Blob is
  * an opaque in-memory object that those extensions silently reject —
  * leaving the user with the degenerate "Add to Shared Album / Find on
  * Amazon" sheet. Falls back to in-memory File if OPFS isn't available.
+ *
+ * NB: We deliberately use `writable.write(blob)` rather than
+ * `res.body.pipeTo(writable)` — `pipeTo` to FileSystemWritableFileStream
+ * is flaky in the main thread on iOS Safari (it's only fully supported in
+ * workers via createSyncAccessHandle). The blob path double-buffers in
+ * RAM but works reliably; the size cap above keeps the buffer bounded.
  */
 async function materializeToOpfs(
   url: string,
@@ -929,13 +935,14 @@ async function materializeToOpfs(
   signal: AbortSignal,
   onHandle: (h: FileSystemFileHandle) => void,
 ): Promise<File> {
+  const res = await fetch(url, { signal })
+  if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
+  const blob = await res.blob()
+
   const dir = await getStagingDir()
   if (!dir) {
-    // No OPFS — fall back to the in-memory File (iOS shortcut won't appear
+    // No OPFS — fall back to the in-memory File (Shortcut won't appear
     // but at least Save to Files / AirDrop / Messages still work).
-    const res = await fetch(url, { signal })
-    if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
-    const blob = await res.blob()
     const type = blob.type || mimeFromFilename(filename)
     return new File([blob], filename, { type })
   }
@@ -944,12 +951,8 @@ async function materializeToOpfs(
   onHandle(handle)
   const writable = await handle.createWritable()
   try {
-    const res = await fetch(url, { signal })
-    if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
-    if (!res.body) throw new Error("response has no body")
-    // Stream the body chunk-by-chunk into OPFS — no full-blob buffer in
-    // RAM. pipeTo closes the writable when the source ends.
-    await res.body.pipeTo(writable as unknown as WritableStream, { signal })
+    await writable.write(blob)
+    await writable.close()
   } catch (err) {
     try {
       await writable.abort()
@@ -958,11 +961,20 @@ async function materializeToOpfs(
     }
     throw err
   }
-  // The File from getFile() inherits the handle's name; iOS resolves the
-  // UTI from the extension (already in `filename`). MIME on the File
-  // object isn't always honoured by getFile(), but the extension is what
-  // matters for iOS UTI resolution.
   return await handle.getFile()
+}
+
+// OPFS getFileHandle rejects "/" and "\" in names. yt-dlp output can
+// include slashes (channel/title patterns) and other special chars; clamp
+// to a safe subset and limit length so iOS' UTI resolver can read the ext.
+function sanitizeFilename(name: string): string {
+  let s = name.replace(/[/\\:*?"<>|]/g, "_").trim()
+  if (s.length > 200) {
+    const dot = s.lastIndexOf(".")
+    const ext = dot > 0 ? s.slice(dot) : ""
+    s = s.slice(0, 200 - ext.length) + ext
+  }
+  return s || "video.mp4"
 }
 
 function IosShareButton({ job }: { job: JobResponse }) {
@@ -976,6 +988,7 @@ function IosShareButton({ job }: { job: JobResponse }) {
       ? "preparing"
       : "no-share"
   })
+  const [errMsg, setErrMsg] = useState<string | null>(null)
 
   useEffect(() => {
     if (state !== "preparing") return
@@ -983,7 +996,7 @@ function IosShareButton({ job }: { job: JobResponse }) {
     let opfsHandle: FileSystemFileHandle | null = null
     ;(async () => {
       try {
-        const filename = job.filename ?? "video.mp4"
+        const filename = sanitizeFilename(job.filename ?? "video.mp4")
         const file = await materializeToOpfs(
           fileUrl(job.id),
           filename,
@@ -999,17 +1012,26 @@ function IosShareButton({ job }: { job: JobResponse }) {
           fileRef.current = file
           setState("ready")
         } else {
-          setState("no-share")
+          console.warn("canShare returned false for File", {
+            name: file.name,
+            size: file.size,
+            type: file.type,
+          })
+          setErrMsg("iOS rejected the file for sharing")
+          setState("error")
         }
       } catch (err) {
         const name = (err as { name?: string })?.name
-        if (name !== "AbortError") setState("no-share")
+        if (name === "AbortError") return
+        console.error("share prep failed:", err)
+        setErrMsg(
+          (err as { message?: string })?.message ?? "couldn't prepare share",
+        )
+        setState("error")
       }
     })()
     return () => {
       ac.abort()
-      // Best-effort cleanup of the staging file. Safe to ignore failures —
-      // the OPFS sandbox is per-origin and the dir is reused next time.
       if (opfsHandle) {
         const handle = opfsHandle
         void (async () => {
@@ -1053,9 +1075,11 @@ function IosShareButton({ job }: { job: JobResponse }) {
       })
   }
 
-  if (state === "no-share") {
-    // Browser claims canShare but rejected the file (codec / size). Fall
-    // back to the plain anchor download.
+  if (state === "no-share" || state === "error") {
+    // Browser/OS rejected file-share or the OPFS staging failed. Fall back
+    // to the plain anchor download — still works in iOS Safari proper
+    // (lands in Files), and lets the user use the Photos shortcut from
+    // there.
     return (
       <div className="flex-1">
         <a
@@ -1068,6 +1092,11 @@ function IosShareButton({ job }: { job: JobResponse }) {
             影片
           </span>
         </a>
+        {state === "error" && errMsg ? (
+          <p className="mt-1.5 text-center text-[11px] leading-snug text-hot">
+            share unavailable: {errMsg}
+          </p>
+        ) : null}
         <IosPhotosHint />
       </div>
     )
