@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { motion, useReducedMotion, AnimatePresence } from "motion/react"
 import { fileUrl, type JobResponse, type ProbeFormat, type ProbeResponse } from "./api"
 import { useDownload } from "./useDownload"
@@ -41,6 +41,7 @@ export default function App() {
       />
 
       <Hero />
+      <PwaHint />
       <MiloCameo />
     </main>
   )
@@ -158,48 +159,98 @@ function PasteForm({
 }) {
   const reduce = useReducedMotion()
   const [url, setUrl] = useState("")
+  const [pasteHint, setPasteHint] = useState<string | null>(null)
   const trimmed = url.trim()
   const valid = /^https?:\/\/\S+/i.test(trimmed)
 
+  const isSecure =
+    typeof window !== "undefined" && window.isSecureContext === true
+  const canReadClipboard =
+    typeof navigator !== "undefined" &&
+    typeof navigator.clipboard?.readText === "function" &&
+    isSecure
+
+  const handlePasteAndGo = async () => {
+    if (submitting) return
+    setPasteHint(null)
+    try {
+      const text = (await navigator.clipboard.readText()).trim()
+      const match = text.match(/https?:\/\/\S+/i)
+      if (!match) {
+        setPasteHint("clipboard has no link")
+        return
+      }
+      setUrl(match[0])
+      onSubmit(match[0])
+    } catch (err) {
+      const name = (err as { name?: string })?.name
+      if (name === "NotAllowedError") {
+        setPasteHint("clipboard permission blocked")
+      } else {
+        setPasteHint("couldn't read clipboard — paste manually")
+      }
+    }
+  }
+
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (valid && !submitting) onSubmit(trimmed)
-      }}
-      className="flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-2"
-      style={{
-        boxShadow:
-          "0 1px 0 0 rgba(26,21,48,0.04), 0 16px 40px -16px rgba(26,21,48,0.35)",
-      }}
-    >
-      <input
-        value={url}
-        onChange={(e) => setUrl(e.target.value)}
-        inputMode="url"
-        autoComplete="off"
-        autoCorrect="off"
-        spellCheck={false}
-        disabled={submitting}
-        placeholder="https://..."
-        className="w-full bg-transparent px-3 py-3 font-mono text-lg tracking-tight outline-none placeholder:text-[var(--subtle)] disabled:opacity-60"
-      />
-      <motion.button
-        whileHover={reduce || !valid || submitting ? undefined : { y: -1 }}
-        whileTap={reduce || !valid || submitting ? undefined : { y: 1 }}
-        type="submit"
-        disabled={!valid || submitting}
-        className="shrink-0 rounded-xl bg-[var(--fg)] px-5 py-3 text-base font-semibold text-[var(--bg)] transition hover:opacity-90 disabled:opacity-40"
+    <div>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (valid && !submitting) onSubmit(trimmed)
+        }}
+        className="flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-2"
+        style={{
+          boxShadow:
+            "0 1px 0 0 rgba(26,21,48,0.04), 0 16px 40px -16px rgba(26,21,48,0.35)",
+        }}
       >
-        {submitting ? (
-          <Spinner />
-        ) : (
-          <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
-            找一找 →
-          </span>
-        )}
-      </motion.button>
-    </form>
+        <input
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          inputMode="url"
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          disabled={submitting}
+          placeholder="https://..."
+          className="w-full bg-transparent px-3 py-3 font-mono text-lg tracking-tight outline-none placeholder:text-[var(--subtle)] disabled:opacity-60"
+        />
+        <motion.button
+          whileHover={reduce || !valid || submitting ? undefined : { y: -1 }}
+          whileTap={reduce || !valid || submitting ? undefined : { y: 1 }}
+          type="submit"
+          disabled={!valid || submitting}
+          className="shrink-0 rounded-xl bg-[var(--fg)] px-5 py-3 text-base font-semibold text-[var(--bg)] transition hover:opacity-90 disabled:opacity-40"
+        >
+          {submitting ? (
+            <Spinner />
+          ) : (
+            <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+              找一找 →
+            </span>
+          )}
+        </motion.button>
+      </form>
+
+      {canReadClipboard ? (
+        <div className="mt-3 flex items-center justify-center gap-2 text-xs text-[var(--muted)]">
+          <button
+            type="button"
+            onClick={handlePasteAndGo}
+            disabled={submitting}
+            className="rounded-full border border-[var(--border)] bg-[var(--surface)]/70 px-3 py-1.5 font-medium text-[var(--fg)] backdrop-blur transition hover:bg-[var(--bg)] disabled:opacity-40"
+          >
+            ⎘ paste &amp; go
+          </button>
+          {pasteHint ? (
+            <span className="text-hot">{pasteHint}</span>
+          ) : (
+            <span className="text-[var(--subtle)]">use what's in your clipboard</span>
+          )}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -237,7 +288,7 @@ function FormatPicker({
       <header className="flex items-center gap-3 p-3">
         <Thumb thumbnail={probe.thumbnail} title={probe.title} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">
+          <div className="line-clamp-2 break-words text-sm font-semibold">
             {probe.title ?? "untitled"}
           </div>
           <div className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--subtle)]">
@@ -499,10 +550,10 @@ function JobPanel({
       <div className="flex items-center gap-3 p-3">
         <Thumb thumbnail={thumb} title={title} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">
+          <div className="line-clamp-2 break-words text-sm font-semibold">
             {title ?? (phase === "error" ? "couldn't start" : "fetching info…")}
           </div>
-          <div className="mt-0.5 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--subtle)]">
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] uppercase tracking-[0.12em] text-[var(--subtle)]">
             <StatusDot phase={phase} status={job?.status} />
             <span>{statusLabel(phase, job?.status)}</span>
             {job?.format_id ? <span>· {job.format_id}</span> : null}
@@ -729,65 +780,102 @@ function MoonIcon() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Save / share button — uses navigator.share() so iOS surfaces the share     */
-/* sheet (Save to Photos, Save to Files, Messages, etc.). Falls back to a    */
-/* plain download link on browsers without Web Share file support.           */
+/* Save button — pre-fetches the file as a Blob in the background as soon     */
+/* as the job completes, then on click calls navigator.share() synchronously  */
+/* (the user-activation window is still alive because we don't await anything */
+/* between the click and the share call). On iOS the share sheet that pops    */
+/* up offers "Save Video → Photos" directly. If file-share isn't supported    */
+/* or the pre-fetch fails, falls back to the anchor download (lands in Files  */
+/* app, user can Save to Photos from there).                                  */
+
+type ShareState = "idle" | "preparing" | "ready" | "sharing" | "no-share"
 
 function SaveButton({ job }: { job: JobResponse }) {
-  const [busy, setBusy] = useState(false)
-  const canShareFiles =
-    typeof navigator !== "undefined" &&
-    typeof navigator.canShare === "function"
+  const fileRef = useRef<File | null>(null)
+  const [shareState, setShareState] = useState<ShareState>(() => {
+    const supportsFileShare =
+      typeof navigator !== "undefined" &&
+      typeof navigator.canShare === "function"
+    return supportsFileShare ? "preparing" : "no-share"
+  })
 
-  const handleShare = async (e: React.MouseEvent) => {
-    if (!canShareFiles) return // let the <a> handle it
-    e.preventDefault()
-    setBusy(true)
-    try {
-      const res = await fetch(fileUrl(job.id))
-      const blob = await res.blob()
-      const file = new File([blob], job.filename ?? "video.mp4", {
-        type: blob.type || "video/mp4",
-      })
-      if (navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          files: [file],
-          title: job.title ?? "video",
+  useEffect(() => {
+    if (shareState !== "preparing") return
+    const ac = new AbortController()
+    ;(async () => {
+      try {
+        const res = await fetch(fileUrl(job.id), { signal: ac.signal })
+        if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
+        const blob = await res.blob()
+        const file = new File([blob], job.filename ?? "video.mp4", {
+          type: blob.type || "video/mp4",
         })
-      } else {
-        // Fall back to a programmatic download.
-        triggerDownload(fileUrl(job.id), job.filename)
+        if (
+          typeof navigator.canShare === "function" &&
+          navigator.canShare({ files: [file] })
+        ) {
+          fileRef.current = file
+          setShareState("ready")
+        } else {
+          setShareState("no-share")
+        }
+      } catch (err) {
+        if (!isAbort(err)) setShareState("no-share")
       }
-    } catch (err) {
-      // User cancelled or share failed — silently fall back to download.
-      if (!isAbort(err)) triggerDownload(fileUrl(job.id), job.filename)
-    } finally {
-      setBusy(false)
-    }
+    })()
+    return () => ac.abort()
+  }, [job.id, job.filename, shareState])
+
+  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    // Only intercept when we have the file ready; otherwise let the anchor
+    // do its plain download thing.
+    if (shareState !== "ready" || !fileRef.current) return
+    e.preventDefault()
+    const file = fileRef.current
+    setShareState("sharing")
+    // Call navigator.share synchronously so iOS retains user activation.
+    void navigator
+      .share({ files: [file], title: job.title ?? "video" })
+      .then(() => setShareState("ready"))
+      .catch((err) => {
+        setShareState("ready")
+        // User cancelled the sheet — do nothing. Real failures: fall back.
+        if (!isAbort(err)) triggerAnchor(fileUrl(job.id), job.filename)
+      })
   }
+
+  const label =
+    shareState === "preparing" ? (
+      <span className="inline-flex items-center gap-2 opacity-80">
+        <Spinner />
+        preparing share…
+      </span>
+    ) : shareState === "sharing" ? (
+      <Spinner />
+    ) : (
+      <>
+        ★{" "}
+        {shareState === "ready" ? "share" : "save"}{" "}
+        <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+          影片
+        </span>
+      </>
+    )
 
   return (
     <a
       href={fileUrl(job.id)}
       download={job.filename ?? undefined}
-      onClick={handleShare}
+      onClick={handleClick}
+      aria-disabled={shareState === "sharing" ? true : undefined}
       className="flex-1 rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
     >
-      {busy ? (
-        <Spinner />
-      ) : (
-        <>
-          ★ save{" "}
-          <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
-            影片
-          </span>
-        </>
-      )}
+      {label}
     </a>
   )
 }
 
-function triggerDownload(url: string, filename: string | null) {
+function triggerAnchor(url: string, filename: string | null) {
   const a = document.createElement("a")
   a.href = url
   if (filename) a.download = filename
@@ -798,6 +886,60 @@ function triggerDownload(url: string, filename: string | null) {
 
 function isAbort(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError"
+}
+
+/* -------------------------------------------------------------------------- */
+/* PWA install hint / status — sits at the bottom of the page, dismissible.   */
+/* On iOS we deliberately call out that share-target is unsupported because   */
+/* WebKit hasn't shipped it; the paste & go button is the iOS substitute.    */
+
+function PwaHint() {
+  const [hidden, setHidden] = useState(() => {
+    if (typeof window === "undefined") return true
+    return localStorage.getItem("pwa-hint-hidden") === "1"
+  })
+
+  const standalone =
+    typeof window !== "undefined" &&
+    (window.matchMedia("(display-mode: standalone)").matches ||
+      // iOS Safari uses a non-standard property
+      ("standalone" in window.navigator &&
+        (window.navigator as { standalone?: boolean }).standalone === true))
+
+  const isIos =
+    typeof window !== "undefined" &&
+    /iphone|ipad|ipod/i.test(window.navigator.userAgent)
+
+  const dismiss = () => {
+    setHidden(true)
+    try {
+      localStorage.setItem("pwa-hint-hidden", "1")
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (hidden || standalone) return null
+
+  return (
+    <div className="fixed inset-x-3 bottom-3 z-20 mx-auto flex max-w-md items-center justify-between gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)]/85 px-3 py-2 text-left text-xs text-[var(--muted)] backdrop-blur sm:bottom-5">
+      <div className="min-w-0">
+        <div className="font-semibold text-[var(--fg)]">install on your phone</div>
+        <div className="mt-0.5 text-[11px] leading-snug">
+          {isIos
+            ? "tap share → Add to Home Screen. (iOS doesn't list PWAs in the share sheet — use paste & go instead.)"
+            : "browser menu → Install app, or tap the install icon in the address bar."}
+        </div>
+      </div>
+      <button
+        onClick={dismiss}
+        aria-label="dismiss"
+        className="shrink-0 rounded-full border border-[var(--border)] px-2 py-1 text-[var(--muted)] transition hover:bg-[var(--bg)]"
+      >
+        ✕
+      </button>
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
