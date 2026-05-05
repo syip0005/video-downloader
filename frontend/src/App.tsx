@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { motion, useReducedMotion, AnimatePresence } from "motion/react"
 import {
   fileUrl,
@@ -826,134 +826,114 @@ function MoonIcon() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Save button — pre-fetches the file as a Blob in the background as soon     */
-/* as the job completes, then on click calls navigator.share() synchronously  */
-/* (the user-activation window is still alive because we don't await anything */
-/* between the click and the share call). On iOS the share sheet that pops    */
-/* up offers "Save Video → Photos" directly. If file-share isn't supported    */
-/* or the pre-fetch fails, falls back to the anchor download (lands in Files  */
-/* app, user can Save to Photos from there).                                  */
+/* Save button — plain anchor download. Backend sends                         */
+/* Content-Disposition: attachment, so iOS shows its native download tray and */
+/* the file lands in the Files app in ~1s. For "save to Photos" we follow     */
+/* cobalt.tools' approach: link to a one-tap iCloud Shortcut (installed once, */
+/* then appears in the iOS Files share sheet). There's no clean web API for   */
+/* writing to the Photo Library; navigator.share({files}) is too slow and     */
+/* unreliable to use as a default path.                                       */
 
-type ShareState = "idle" | "preparing" | "ready" | "sharing" | "no-share"
+const IOS_SAVE_TO_PHOTOS_SHORTCUT =
+  "https://www.icloud.com/shortcuts/14e9aebf04b24156acc34ceccf7e6fcd"
 
 function SaveButton({ job }: { job: JobResponse }) {
-  const fileRef = useRef<File | null>(null)
-  const [shareState, setShareState] = useState<ShareState>(() => {
-    const supportsFileShare =
-      typeof navigator !== "undefined" &&
-      typeof navigator.canShare === "function"
-    return supportsFileShare ? "preparing" : "no-share"
-  })
-
-  useEffect(() => {
-    if (shareState !== "preparing") return
-    const ac = new AbortController()
-    ;(async () => {
-      try {
-        const res = await fetch(fileUrl(job.id), { signal: ac.signal })
-        if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
-        const blob = await res.blob()
-        const file = new File([blob], job.filename ?? "video.mp4", {
-          type: blob.type || "video/mp4",
-        })
-        if (
-          typeof navigator.canShare === "function" &&
-          navigator.canShare({ files: [file] })
-        ) {
-          fileRef.current = file
-          setShareState("ready")
-        } else {
-          setShareState("no-share")
-        }
-      } catch (err) {
-        if (!isAbort(err)) setShareState("no-share")
-      }
-    })()
-    return () => ac.abort()
-  }, [job.id, job.filename, shareState])
-
-  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    // Only intercept when we have the file ready; otherwise let the anchor
-    // do its plain download thing.
-    if (shareState !== "ready" || !fileRef.current) return
-    e.preventDefault()
-    const file = fileRef.current
-    setShareState("sharing")
-
-    // 60s watchdog — navigator.share *usually* settles on iOS 17+, but tab
-    // backgrounding or Low Power Mode can leave the promise pending. Without
-    // this the button stays stuck on "sharing…" forever.
-    const watchdog = window.setTimeout(() => setShareState("ready"), 60_000)
-
-    // Call navigator.share synchronously so iOS retains user activation.
-    // Never fall back to a synthetic anchor click on rejection — on iOS that
-    // enters QuickLook preview mode which the user can't dismiss.
-    void navigator
-      .share({ files: [file], title: job.title ?? "video" })
-      .catch((err) => {
-        const name = (err as { name?: string })?.name
-        // AbortError is the user closing the sheet — silent and expected.
-        // NotAllowedError / DataError mean iOS rejected the file (codec /
-        // size). Log so it's visible in the console, but don't auto-fall-
-        // back; the user can tap "or save to files" themselves.
-        if (name && name !== "AbortError") {
-          console.warn("share rejected:", name, err)
-        }
-      })
-      .finally(() => {
-        window.clearTimeout(watchdog)
-        setShareState("ready")
-      })
-  }
-
-  const label =
-    shareState === "preparing" ? (
-      <span className="inline-flex items-center gap-2 opacity-80">
-        <Spinner />
-        preparing share…
-      </span>
-    ) : shareState === "sharing" ? (
-      <Spinner />
-    ) : (
-      <>
-        ★{" "}
-        {shareState === "ready" ? "share" : "save"}{" "}
-        <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
-          影片
-        </span>
-      </>
-    )
-
   return (
     <div className="flex-1">
       <a
         href={fileUrl(job.id)}
         download={job.filename ?? undefined}
-        onClick={handleClick}
-        aria-disabled={shareState === "sharing" ? true : undefined}
         className="block rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
       >
-        {label}
+        ★ save{" "}
+        <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+          影片
+        </span>
       </a>
-      {shareState === "sharing" ? (
-        <p className="mt-1.5 text-center text-[11px] font-mono uppercase tracking-[0.14em] text-[var(--subtle)]">
-          saving to Photos can take a moment
-        </p>
-      ) : shareState === "ready" ? (
-        <a
-          href={fileUrl(job.id)}
-          download={job.filename ?? undefined}
-          className="mt-1.5 block text-center text-[11px] font-mono uppercase tracking-[0.14em] text-[var(--subtle)] hover:text-[var(--muted)]"
-        >
-          or save to files →
-        </a>
-      ) : null}
+      <IosPhotosHint />
     </div>
   )
 }
 
-function isAbort(err: unknown): boolean {
-  return err instanceof Error && err.name === "AbortError"
+function IosPhotosHint() {
+  const [open, setOpen] = useState(false)
+  const isIos =
+    typeof window !== "undefined" &&
+    /iphone|ipad|ipod/i.test(window.navigator.userAgent)
+
+  if (!isIos) return null
+
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-center gap-1.5 text-[11px] font-mono uppercase tracking-[0.14em] text-[var(--subtle)] transition hover:text-[var(--muted)]"
+      >
+        save to Photos on iPhone?
+        <motion.span
+          animate={{ rotate: open ? 180 : 0 }}
+          transition={{ duration: 0.2 }}
+          className="text-[10px]"
+        >
+          ▾
+        </motion.span>
+      </button>
+
+      <AnimatePresence initial={false}>
+        {open ? (
+          <motion.div
+            key="hint"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="mt-2 rounded-xl border border-[var(--border)] bg-[var(--bg)] p-3 text-left text-xs leading-relaxed text-[var(--muted)]">
+              <p className="font-semibold text-[var(--fg)]">one-time setup:</p>
+              <a
+                href={IOS_SAVE_TO_PHOTOS_SHORTCUT}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-1.5 block rounded-lg border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-center text-[var(--fg)] transition hover:opacity-90"
+              >
+                ⤓ install "Save to Photos" shortcut →
+              </a>
+              <p className="mt-3 font-semibold text-[var(--fg)]">to save a video:</p>
+              <ol className="mt-1 list-decimal pl-5">
+                <li>
+                  tap{" "}
+                  <span className="font-medium text-[var(--fg)]">
+                    save{" "}
+                    <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+                      影片
+                    </span>
+                  </span>{" "}
+                  above (lands in Files)
+                </li>
+                <li>open Files → tap the video</li>
+                <li>tap share → tap "Save to Photos"</li>
+              </ol>
+              <p className="mt-3 text-[11px] text-[var(--subtle)]">
+                shortcut courtesy of{" "}
+                <a
+                  href="https://cobalt.tools"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline"
+                >
+                  cobalt.tools
+                </a>
+                . iOS doesn't expose a Web API to write directly to Photos.
+              </p>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  )
 }
 
 /* -------------------------------------------------------------------------- */
