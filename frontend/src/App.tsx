@@ -838,11 +838,31 @@ const IOS_SAVE_TO_PHOTOS_SHORTCUT =
   "https://www.icloud.com/shortcuts/14e9aebf04b24156acc34ceccf7e6fcd"
 
 function SaveButton({ job }: { job: JobResponse }) {
+  // iOS PWA standalone mode silently ignores the `download` attribute and
+  // navigates the PWA window to the file URL instead, which lands the user
+  // in QuickLook ("Open in WhatsApp / More") with no way back. window.open
+  // bounces the URL out to Safari proper where the download tray works.
+  // Same workaround cobalt.tools uses (see web/src/lib/device.ts:
+  //   directDownload = !(installed && iOS)).
+  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (typeof window === "undefined") return
+    const isIos = /iphone|ipad|ipod/i.test(window.navigator.userAgent)
+    const standalone =
+      window.matchMedia("(display-mode: standalone)").matches ||
+      ("standalone" in window.navigator &&
+        (window.navigator as { standalone?: boolean }).standalone === true)
+    if (isIos && standalone) {
+      e.preventDefault()
+      window.open(fileUrl(job.id), "_blank", "noopener,noreferrer")
+    }
+  }
+
   return (
     <div className="flex-1">
       <a
         href={fileUrl(job.id)}
         download={job.filename ?? undefined}
+        onClick={handleClick}
         className="block rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
       >
         ★ save{" "}
