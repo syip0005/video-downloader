@@ -879,12 +879,31 @@ function SaveButton({ job }: { job: JobResponse }) {
     e.preventDefault()
     const file = fileRef.current
     setShareState("sharing")
+
+    // 60s watchdog — navigator.share *usually* settles on iOS 17+, but tab
+    // backgrounding or Low Power Mode can leave the promise pending. Without
+    // this the button stays stuck on "sharing…" forever.
+    const watchdog = window.setTimeout(() => setShareState("ready"), 60_000)
+
     // Call navigator.share synchronously so iOS retains user activation.
     // Never fall back to a synthetic anchor click on rejection — on iOS that
     // enters QuickLook preview mode which the user can't dismiss.
     void navigator
       .share({ files: [file], title: job.title ?? "video" })
-      .finally(() => setShareState("ready"))
+      .catch((err) => {
+        const name = (err as { name?: string })?.name
+        // AbortError is the user closing the sheet — silent and expected.
+        // NotAllowedError / DataError mean iOS rejected the file (codec /
+        // size). Log so it's visible in the console, but don't auto-fall-
+        // back; the user can tap "or save to files" themselves.
+        if (name && name !== "AbortError") {
+          console.warn("share rejected:", name, err)
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(watchdog)
+        setShareState("ready")
+      })
   }
 
   const label =
@@ -916,7 +935,11 @@ function SaveButton({ job }: { job: JobResponse }) {
       >
         {label}
       </a>
-      {shareState === "ready" || shareState === "sharing" ? (
+      {shareState === "sharing" ? (
+        <p className="mt-1.5 text-center text-[11px] font-mono uppercase tracking-[0.14em] text-[var(--subtle)]">
+          saving to Photos can take a moment
+        </p>
+      ) : shareState === "ready" ? (
         <a
           href={fileUrl(job.id)}
           download={job.filename ?? undefined}
