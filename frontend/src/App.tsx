@@ -41,6 +41,7 @@ export default function App() {
       />
 
       <Hero />
+      <MiloCameo />
     </main>
   )
 }
@@ -720,5 +721,74 @@ function MoonIcon() {
     <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor">
       <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
     </svg>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
+/* Milo (the dog) cameo — peeks up from the bottom every so often.            */
+
+function MiloCameo() {
+  const reduce = useReducedMotion()
+  const [visible, setVisible] = useState(false)
+  const [side, setSide] = useState<"left" | "right">("right")
+
+  useEffect(() => {
+    if (reduce) return
+    let timer: number
+    const schedulePeek = () => {
+      // First peek 25–55s after load, then every 60–120s.
+      const delay = visible
+        ? 4500 // how long he stays visible before ducking
+        : 25000 + Math.random() * 30000
+      timer = window.setTimeout(() => {
+        if (visible) {
+          setVisible(false)
+        } else {
+          setSide(Math.random() < 0.5 ? "left" : "right")
+          setVisible(true)
+        }
+      }, delay)
+    }
+    schedulePeek()
+    return () => window.clearTimeout(timer)
+  }, [visible, reduce])
+
+  if (reduce) return null
+
+  return (
+    <AnimatePresence>
+      {visible ? (
+        <motion.button
+          key="milo"
+          onClick={() => setVisible(false)}
+          aria-label="say hi to milo"
+          initial={{ y: 80, rotate: side === "left" ? -8 : 8, opacity: 0 }}
+          animate={{
+            y: 0,
+            rotate: side === "left" ? -6 : 6,
+            opacity: 1,
+            transition: { type: "spring", stiffness: 220, damping: 16 },
+          }}
+          exit={{ y: 90, opacity: 0, transition: { duration: 0.4 } }}
+          className={`fixed bottom-0 z-30 ${
+            side === "left" ? "left-2 sm:left-6" : "right-2 sm:right-6"
+          } pointer-events-auto select-none`}
+        >
+          <motion.span
+            animate={{ rotate: [0, 4, -4, 0] }}
+            transition={{ duration: 2.2, repeat: Infinity, ease: "easeInOut" }}
+            className="block"
+          >
+            <img
+              src="/milo_head.png"
+              alt="milo"
+              draggable={false}
+              className="h-24 w-24 translate-y-3 rounded-t-full object-cover shadow-[0_-6px_24px_-6px_rgba(26,21,48,0.35)] sm:h-28 sm:w-28"
+              style={{ objectPosition: "center top" }}
+            />
+          </motion.span>
+        </motion.button>
+      ) : null}
+    </AnimatePresence>
   )
 }
