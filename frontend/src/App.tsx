@@ -900,6 +900,71 @@ function mimeFromFilename(name: string): string {
   return EXT_TO_MIME[ext] ?? "application/octet-stream"
 }
 
+const OPFS_STAGING_DIR = "mums-share-staging"
+
+async function getStagingDir(): Promise<FileSystemDirectoryHandle | null> {
+  if (typeof navigator === "undefined") return null
+  if (!navigator.storage?.getDirectory) return null
+  try {
+    const root = await navigator.storage.getDirectory()
+    return await root.getDirectoryHandle(OPFS_STAGING_DIR, { create: true })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Stream a server response straight into an OPFS file and return the
+ * resulting on-disk File. Critical for iOS: a File from
+ * FileSystemFileHandle.getFile() is backed by a real inode in the OPFS
+ * sandbox, so iOS' share extensions (Photos, Save Video, Shortcuts)
+ * accept it. A `new File([blob], ...)` constructed from a fetched Blob is
+ * an opaque in-memory object that those extensions silently reject —
+ * leaving the user with the degenerate "Add to Shared Album / Find on
+ * Amazon" sheet. Falls back to in-memory File if OPFS isn't available.
+ */
+async function materializeToOpfs(
+  url: string,
+  filename: string,
+  signal: AbortSignal,
+  onHandle: (h: FileSystemFileHandle) => void,
+): Promise<File> {
+  const dir = await getStagingDir()
+  if (!dir) {
+    // No OPFS — fall back to the in-memory File (iOS shortcut won't appear
+    // but at least Save to Files / AirDrop / Messages still work).
+    const res = await fetch(url, { signal })
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
+    const blob = await res.blob()
+    const type = blob.type || mimeFromFilename(filename)
+    return new File([blob], filename, { type })
+  }
+
+  const handle = await dir.getFileHandle(filename, { create: true })
+  onHandle(handle)
+  const writable = await handle.createWritable()
+  try {
+    const res = await fetch(url, { signal })
+    if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
+    if (!res.body) throw new Error("response has no body")
+    // Stream the body chunk-by-chunk into OPFS — no full-blob buffer in
+    // RAM. pipeTo closes the writable when the source ends.
+    await res.body.pipeTo(writable as unknown as WritableStream, { signal })
+  } catch (err) {
+    try {
+      await writable.abort()
+    } catch {
+      /* ignore */
+    }
+    throw err
+  }
+  // The File from getFile() inherits the handle's name; iOS resolves the
+  // UTI from the extension (already in `filename`). MIME on the File
+  // object isn't always honoured by getFile(), but the extension is what
+  // matters for iOS UTI resolution.
+  return await handle.getFile()
+}
+
 function IosShareButton({ job }: { job: JobResponse }) {
   const fileRef = useRef<File | null>(null)
   const tooBig =
@@ -915,19 +980,18 @@ function IosShareButton({ job }: { job: JobResponse }) {
   useEffect(() => {
     if (state !== "preparing") return
     const ac = new AbortController()
+    let opfsHandle: FileSystemFileHandle | null = null
     ;(async () => {
       try {
-        const res = await fetch(fileUrl(job.id), { signal: ac.signal })
-        if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
-        const blob = await res.blob()
         const filename = job.filename ?? "video.mp4"
-        // Match cobalt: MIME must reflect the actual container so iOS maps
-        // the file to the correct UTI and surfaces Photos / our Shortcut as
-        // share-sheet destinations. Trust the server's Content-Type first
-        // (FastAPI fills it via mimetypes.guess_type), then fall back to
-        // sniffing the filename extension.
-        const type = blob.type || mimeFromFilename(filename)
-        const file = new File([blob], filename, { type })
+        const file = await materializeToOpfs(
+          fileUrl(job.id),
+          filename,
+          ac.signal,
+          (h) => {
+            opfsHandle = h
+          },
+        )
         if (
           typeof navigator.canShare === "function" &&
           navigator.canShare({ files: [file] })
@@ -942,7 +1006,22 @@ function IosShareButton({ job }: { job: JobResponse }) {
         if (name !== "AbortError") setState("no-share")
       }
     })()
-    return () => ac.abort()
+    return () => {
+      ac.abort()
+      // Best-effort cleanup of the staging file. Safe to ignore failures —
+      // the OPFS sandbox is per-origin and the dir is reused next time.
+      if (opfsHandle) {
+        const handle = opfsHandle
+        void (async () => {
+          try {
+            const dir = await getStagingDir()
+            if (dir) await dir.removeEntry(handle.name)
+          } catch {
+            /* ignore */
+          }
+        })()
+      }
+    }
   }, [state, job.id, job.filename])
 
   const handleShare = () => {
