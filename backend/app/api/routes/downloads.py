@@ -1,3 +1,5 @@
+import mimetypes
+
 from fastapi import APIRouter, status
 from fastapi.responses import FileResponse
 
@@ -26,18 +28,23 @@ def _to_response(job: Job) -> JobResponse:
     )
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED, response_model=JobResponse)
+@router.post(
+    "",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=JobResponse,
+    summary="Submit a URL for download",
+)
 async def create_download(payload: DownloadRequest, manager: JobManagerDep) -> JobResponse:
     job = await manager.enqueue(str(payload.url), payload.format)
     return _to_response(job)
 
 
-@router.get("", response_model=list[JobResponse])
+@router.get("", response_model=list[JobResponse], summary="List all jobs (newest first)")
 async def list_downloads(manager: JobManagerDep) -> list[JobResponse]:
     return [_to_response(j) for j in await manager.list()]
 
 
-@router.get("/{job_id}", response_model=JobResponse)
+@router.get("/{job_id}", response_model=JobResponse, summary="Get job status")
 async def get_download(job_id: str, manager: JobManagerDep) -> JobResponse:
     job = await manager.get(job_id)
     if job is None:
@@ -45,9 +52,21 @@ async def get_download(job_id: str, manager: JobManagerDep) -> JobResponse:
     return _to_response(job)
 
 
-@router.get("/{job_id}/file")
+@router.get(
+    "/{job_id}/file",
+    summary="Stream the downloaded file (iOS-friendly attachment)",
+    response_class=FileResponse,
+)
 async def get_download_file(job_id: str, manager: JobManagerDep) -> FileResponse:
     path = await manager.file_path(job_id)
     if path is None:
         raise JobNotFound(f"file for job {job_id} not available")
-    return FileResponse(path, filename=path.name)
+
+    # Force a download prompt on iOS Safari instead of inline playback.
+    media_type, _ = mimetypes.guess_type(path.name)
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type=media_type or "application/octet-stream",
+        content_disposition_type="attachment",
+    )
