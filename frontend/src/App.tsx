@@ -206,6 +206,7 @@ function JobPanel({
         pct={phase === "done" ? 100 : progressPct}
         active={phase === "active"}
         failed={phase === "error"}
+        done={phase === "done"}
       />
 
       <div className="flex items-center justify-between gap-2 p-3">
@@ -233,7 +234,16 @@ function JobPanel({
           onClick={onReset}
           className="shrink-0 rounded-xl border border-[var(--border)] px-3 py-2 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--bg)]"
         >
-          {phase === "done" || phase === "error" ? "new link" : "cancel"}
+          {phase === "done" || phase === "error" ? (
+            <>
+              new{" "}
+              <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+                連結
+              </span>
+            </>
+          ) : (
+            "cancel"
+          )}
         </button>
       </div>
     </div>
@@ -263,31 +273,32 @@ function ProgressBar({
   pct,
   active,
   failed,
+  done,
 }: {
   pct: number
   active: boolean
   failed: boolean
+  done: boolean
 }) {
+  const fill = failed ? "bg-hot" : done ? "bg-mint" : "bg-cyan"
   return (
-    <div className="relative h-1.5 w-full overflow-hidden bg-[var(--border)]">
-      <motion.div
-        className={
-          failed
-            ? "h-full bg-hot"
-            : "h-full bg-gradient-to-r from-hot via-grape to-cyan"
-        }
-        initial={false}
-        animate={{ width: `${Math.max(2, pct)}%` }}
-        transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-      />
-      {active ? (
+    <div className="px-3">
+      <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--border)]">
         <motion.div
-          className="absolute inset-y-0 w-1/3 bg-white/40 mix-blend-overlay"
-          initial={{ x: "-100%" }}
-          animate={{ x: "300%" }}
-          transition={{ duration: 1.6, ease: "linear", repeat: Infinity }}
+          className={`h-full rounded-full ${fill}`}
+          initial={false}
+          animate={{ width: `${Math.max(2, pct)}%` }}
+          transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
         />
-      ) : null}
+        {active ? (
+          <motion.div
+            className="absolute inset-y-0 w-1/3 bg-white/30 mix-blend-overlay"
+            initial={{ x: "-100%" }}
+            animate={{ x: "300%" }}
+            transition={{ duration: 1.6, ease: "linear", repeat: Infinity }}
+          />
+        ) : null}
+      </div>
     </div>
   )
 }
