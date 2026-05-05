@@ -69,7 +69,7 @@ function Hero() {
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-      className="relative z-10 w-full max-w-md text-center"
+      className="relative z-10 w-full max-w-2xl text-center"
     >
       <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface)]/70 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--muted)] backdrop-blur">
         <span className="h-1.5 w-1.5 rounded-full bg-hot" />
@@ -79,7 +79,7 @@ function Hero() {
       <h1
         lang="zh-Hant"
         style={{ fontFamily: "var(--font-tc)" }}
-        className="mt-7 text-7xl font-black leading-[0.95] tracking-[-0.02em] sm:text-8xl"
+        className="mt-7 text-6xl font-black leading-[0.95] tracking-[-0.02em] sm:text-7xl"
       >
         媽<span className="text-rainbow">下載</span>器
       </h1>
@@ -96,7 +96,7 @@ function Hero() {
         </span>
       </p>
 
-      <div className="mt-9">
+      <div className="mx-auto mt-9 w-full sm:max-w-2xl">
         <AnimatePresence mode="wait" initial={false}>
           {state.phase === "idle" || state.phase === "probing" ? (
             <Stage key="form">
@@ -126,9 +126,6 @@ function Hero() {
         </AnimatePresence>
       </div>
 
-      <p className="mt-6 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--subtle)]">
-        yt-dlp · 自家託管 · ios-friendly
-      </p>
     </motion.section>
   )
 }
@@ -170,8 +167,11 @@ function PasteForm({
         e.preventDefault()
         if (valid && !submitting) onSubmit(trimmed)
       }}
-      className="flex items-center gap-1.5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-1.5"
-      style={{ boxShadow: "var(--shadow-ambient)" }}
+      className="flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-2"
+      style={{
+        boxShadow:
+          "0 1px 0 0 rgba(26,21,48,0.04), 0 16px 40px -16px rgba(26,21,48,0.35)",
+      }}
     >
       <input
         value={url}
@@ -182,14 +182,14 @@ function PasteForm({
         spellCheck={false}
         disabled={submitting}
         placeholder="https://..."
-        className="w-full bg-transparent px-3 py-2.5 font-mono text-base tracking-tight outline-none placeholder:text-[var(--subtle)] disabled:opacity-60"
+        className="w-full bg-transparent px-3 py-3 font-mono text-lg tracking-tight outline-none placeholder:text-[var(--subtle)] disabled:opacity-60"
       />
       <motion.button
         whileHover={reduce || !valid || submitting ? undefined : { y: -1 }}
         whileTap={reduce || !valid || submitting ? undefined : { y: 1 }}
         type="submit"
         disabled={!valid || submitting}
-        className="shrink-0 rounded-xl bg-[var(--fg)] px-4 py-2.5 text-sm font-medium text-[var(--bg)] transition hover:opacity-90 disabled:opacity-40"
+        className="shrink-0 rounded-xl bg-[var(--fg)] px-5 py-3 text-base font-semibold text-[var(--bg)] transition hover:opacity-90 disabled:opacity-40"
       >
         {submitting ? (
           <Spinner />
