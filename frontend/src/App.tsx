@@ -838,14 +838,11 @@ const IOS_SAVE_TO_PHOTOS_SHORTCUT =
   "https://www.icloud.com/shortcuts/14e9aebf04b24156acc34ceccf7e6fcd"
 
 function SaveButton({ job }: { job: JobResponse }) {
-  const isIosPwa =
+  const isIos =
     typeof window !== "undefined" &&
-    /iphone|ipad|ipod/i.test(window.navigator.userAgent) &&
-    (window.matchMedia("(display-mode: standalone)").matches ||
-      ("standalone" in window.navigator &&
-        (window.navigator as { standalone?: boolean }).standalone === true))
+    /iphone|ipad|ipod/i.test(window.navigator.userAgent)
 
-  if (isIosPwa) return <IosPwaShareButton job={job} />
+  if (isIos) return <IosShareButton job={job} />
 
   return (
     <div className="flex-1">
@@ -864,22 +861,46 @@ function SaveButton({ job }: { job: JobResponse }) {
   )
 }
 
-/* iOS PWA standalone uses navigator.share({ files }) — the same path        */
-/* cobalt.tools uses for local Files <256 MB. Pre-fetches the file as a      */
-/* Blob in the background; on click calls navigator.share synchronously so   */
-/* iOS retains the user-activation gesture. Slow for large files (iOS spec   */
-/* limitation, not ours) but it actually pulls bytes onto the device — which */
-/* nothing else does cleanly from an installed iOS PWA.                      */
+/* iOS uses navigator.share({ files }) — same path cobalt.tools uses for     */
+/* local Files. Pre-fetches the finished file as a Blob in the background;   */
+/* on click calls navigator.share synchronously so iOS retains the user-     */
+/* activation gesture. iOS' share sheet then offers Save Video, Save to      */
+/* Files, AirDrop, Messages, and any installed Siri Shortcuts that accept    */
+/* video — which is how the cobalt "Save to Photos" shortcut becomes a       */
+/* one-tap destination once the user installs it.                            */
 
 type ShareReadyState = "preparing" | "ready" | "sharing" | "no-share"
 
-// Only pre-fetch + file-share if the job is under this size. iOS holds the
-// entire blob in browser RAM for the share IPC; above ~256 MB iOS Safari
-// will frequently OOM the tab. 512 MB is the upper limit we'll attempt
-// before falling back to the anchor download.
+// Pre-fetch + file-share gate. iOS holds the entire blob in tab RAM for the
+// share IPC; above ~256 MB it frequently OOMs the tab. 512 MB is the upper
+// limit we'll attempt before falling back to the anchor download.
 const IOS_SHARE_MAX_BYTES = 512 * 1024 * 1024
 
-function IosPwaShareButton({ job }: { job: JobResponse }) {
+// Map common containers to MIME types so iOS resolves the right UTI when
+// blob.type comes back empty (rare). Mirrors the server's mimetypes
+// guess-table for the formats yt-dlp actually emits.
+const EXT_TO_MIME: Record<string, string> = {
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  mkv: "video/x-matroska",
+  m4a: "audio/mp4",
+  mp3: "audio/mpeg",
+  ogg: "audio/ogg",
+  opus: "audio/ogg",
+  wav: "audio/wav",
+  flac: "audio/flac",
+}
+
+function mimeFromFilename(name: string): string {
+  const dot = name.lastIndexOf(".")
+  if (dot < 0) return "application/octet-stream"
+  const ext = name.slice(dot + 1).toLowerCase()
+  return EXT_TO_MIME[ext] ?? "application/octet-stream"
+}
+
+function IosShareButton({ job }: { job: JobResponse }) {
   const fileRef = useRef<File | null>(null)
   const tooBig =
     typeof job.filesize === "number" && job.filesize > IOS_SHARE_MAX_BYTES
@@ -899,9 +920,14 @@ function IosPwaShareButton({ job }: { job: JobResponse }) {
         const res = await fetch(fileUrl(job.id), { signal: ac.signal })
         if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
         const blob = await res.blob()
-        const file = new File([blob], job.filename ?? "video.mp4", {
-          type: blob.type || "video/mp4",
-        })
+        const filename = job.filename ?? "video.mp4"
+        // Match cobalt: MIME must reflect the actual container so iOS maps
+        // the file to the correct UTI and surfaces Photos / our Shortcut as
+        // share-sheet destinations. Trust the server's Content-Type first
+        // (FastAPI fills it via mimetypes.guess_type), then fall back to
+        // sniffing the filename extension.
+        const type = blob.type || mimeFromFilename(filename)
+        const file = new File([blob], filename, { type })
         if (
           typeof navigator.canShare === "function" &&
           navigator.canShare({ files: [file] })
@@ -931,8 +957,11 @@ function IosPwaShareButton({ job }: { job: JobResponse }) {
     // 60s watchdog — share usually settles, but tab backgrounding or Low
     // Power Mode can leave it pending.
     const watchdog = window.setTimeout(() => setState("ready"), 60_000)
+    // Match cobalt exactly: { files } only, no title/text/url. The Save-to-
+    // Photos Shortcut keys off the file's UTI; extra share-sheet metadata
+    // may cause iOS to route the share differently.
     void navigator
-      .share({ files: [file], title: job.title ?? "video" })
+      .share({ files: [file] })
       .catch((err) => {
         const name = (err as { name?: string })?.name
         if (name && name !== "AbortError") {
@@ -996,7 +1025,7 @@ function IosPwaShareButton({ job }: { job: JobResponse }) {
         {label}
       </button>
       <p className="mt-1.5 text-center text-[11px] leading-snug text-[var(--subtle)]">
-        in app mode · iOS share sheet · big files take 20–60s
+        opens iOS share sheet · big files take 20–60s
       </p>
       <IosPhotosHint />
     </div>
@@ -1049,20 +1078,23 @@ function IosPhotosHint() {
               >
                 ⤓ install "Save to Photos" shortcut →
               </a>
-              <p className="mt-3 font-semibold text-[var(--fg)]">to save a video:</p>
+              <p className="mt-3 font-semibold text-[var(--fg)]">then to save a video:</p>
               <ol className="mt-1 list-decimal pl-5">
                 <li>
                   tap{" "}
                   <span className="font-medium text-[var(--fg)]">
-                    save{" "}
+                    ⤴ share{" "}
                     <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
                       影片
                     </span>
                   </span>{" "}
-                  above (lands in Files)
+                  above
                 </li>
-                <li>open Files → tap the video</li>
-                <li>tap share → tap "Save to Photos"</li>
+                <li>
+                  in the share sheet, tap{" "}
+                  <span className="font-medium text-[var(--fg)]">Save to Photos</span>{" "}
+                  (it appears once installed)
+                </li>
               </ol>
               <p className="mt-3 text-[11px] text-[var(--subtle)]">
                 shortcut courtesy of{" "}
