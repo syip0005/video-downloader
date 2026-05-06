@@ -941,11 +941,24 @@ function IosShareButton({
       return
     }
     setSharing(true)
-    // Match cobalt exactly: { files } only — no title/text/url. The
-    // Save-to-Photos Shortcut keys off the file's UTI; extra share-sheet
-    // metadata can cause iOS to route the share elsewhere.
+    // Provide BOTH `url` and `files` so iOS shows the union of activities:
+    //   - file activities (Save Video, Save to Files, Add to Shared Album)
+    //   - URL activities — including the cobalt "Save to Photos" Siri
+    //     Shortcut, which is configured to "Receive URLs from Share Sheet"
+    //     and so is filtered out when we share files-only. The shortcut
+    //     fetches the URL via "Get contents of URLs" and saves to Photos.
+    const absoluteUrl = new URL(
+      fileUrl(job.id),
+      window.location.origin,
+    ).toString()
+    const payload: ShareData = { url: absoluteUrl, files: [file] }
+    // Some iOS versions reject the union; fall back to files-only.
+    const supported =
+      typeof navigator.canShare !== "function" ||
+      navigator.canShare(payload)
+    const finalPayload = supported ? payload : { files: [file] }
     void navigator
-      .share({ files: [file] })
+      .share(finalPayload)
       .catch((err) => {
         const name = (err as { name?: string })?.name
         if (name && name !== "AbortError") {
@@ -1043,9 +1056,9 @@ function IosPhotosHint() {
                   above
                 </li>
                 <li>
-                  in the share sheet, tap{" "}
-                  <span className="font-medium text-[var(--fg)]">Save to Photos</span>{" "}
-                  (it appears once installed)
+                  scroll the actions list and tap{" "}
+                  <span className="font-medium text-[var(--fg)]">Save to Photos (use with cobalt)</span>{" "}
+                  — it sits below Save Video / Add to Shared Album, after a longer scroll
                 </li>
               </ol>
               <p className="mt-3 text-[11px] text-[var(--subtle)]">
