@@ -8,7 +8,6 @@ import {
   type ProbeResponse,
 } from "./api"
 import { useDownload } from "./useDownload"
-import type { SharePrep } from "./share-prep"
 
 type Theme = "light" | "dark"
 
@@ -583,17 +582,11 @@ function JobPanel({
   onReset: () => void
   onPickAgain?: () => void
 }) {
-  const { phase, job, error, probe, share } = state
+  const { phase, job, error, probe } = state
   const progressPct = Math.round(((job?.progress ?? 0) as number) * 100)
 
   const title = job?.title ?? probe?.title ?? null
   const thumb = job?.thumbnail ?? probe?.thumbnail ?? null
-  // During client-side staging the backend is finished but the share file
-  // isn't local yet. We freeze the bar at 100% with the active shimmer so
-  // users see continuous motion through the whole "preparing" period.
-  const isStaging = phase === "staging"
-  const barPct = phase === "done" || isStaging ? 100 : progressPct
-  const barActive = phase === "active" || isStaging
 
   return (
     <div
@@ -616,28 +609,18 @@ function JobPanel({
       </div>
 
       <ProgressBar
-        pct={barPct}
-        active={barActive}
+        pct={phase === "done" ? 100 : progressPct}
+        active={phase === "active"}
         failed={phase === "error"}
         done={phase === "done"}
       />
 
       <div className="flex items-center justify-between gap-2 p-3">
         {phase === "done" && job ? (
-          <SaveButton job={job} share={share} />
+          <SaveButton job={job} />
         ) : phase === "error" ? (
           <span className="flex-1 truncate text-xs text-hot">
             {error ?? "something went wrong"}
-          </span>
-        ) : isStaging ? (
-          <span className="flex-1 inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">
-            <motion.span
-              aria-hidden
-              className="inline-block h-3 w-3 rounded-full border-2 border-[var(--border)] border-t-[var(--fg)]"
-              animate={{ rotate: 360 }}
-              transition={{ duration: 0.9, ease: "linear", repeat: Infinity }}
-            />
-            preparing share…
           </span>
         ) : (
           <span className="flex-1 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--subtle)]">
@@ -743,8 +726,6 @@ function StatusDot({
       ? "bg-mint"
       : phase === "error"
       ? "bg-hot"
-      : phase === "staging"
-      ? "bg-cyan"
       : status === "downloading"
       ? "bg-cyan"
       : "bg-lemon"
@@ -752,7 +733,7 @@ function StatusDot({
     <span className="relative flex h-2 w-2 shrink-0">
       <span
         className={`absolute inline-flex h-full w-full rounded-full opacity-60 ${cls} ${
-          phase === "active" || phase === "staging" ? "animate-ping" : ""
+          phase === "active" ? "animate-ping" : ""
         }`}
       />
       <span className={`relative inline-flex h-2 w-2 rounded-full ${cls}`} />
@@ -762,7 +743,6 @@ function StatusDot({
 
 function statusLabel(phase: string, status?: JobResponse["status"]): string {
   if (phase === "submitting") return "starting"
-  if (phase === "staging") return "preparing share"
   if (phase === "done") return "ready"
   if (phase === "error") return "failed"
   if (status === "queued") return "queued"
@@ -846,29 +826,22 @@ function MoonIcon() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Save button. Non-iOS: plain anchor download. Backend sends                 */
-/* Content-Disposition: attachment, so iOS Safari also shows its native       */
-/* download tray and lands the file in Files in ~1s. iOS branch: file is     */
-/* already staged client-side (see useDownload's staging phase), so the      */
-/* button can call navigator.share synchronously inside the user gesture —   */
-/* the same invariant cobalt.tools relies on. The Save-to-Photos Siri        */
-/* Shortcut shows up once installed; we just link to install it.             */
+/* Save button. Non-iOS: plain anchor download. iOS: navigator.share with a  */
+/* URL so the cobalt "Save to Photos" Siri Shortcut (which is configured to  */
+/* "Receive URLs from Share Sheet") can fetch and save. We deliberately do   */
+/* NOT include `files` in the share — iOS bundles file+url shares into a    */
+/* placeholder URL the shortcut can't reach, breaking the save. Cobalt's    */
+/* shareURL path is the same shape.                                         */
 
 const IOS_SAVE_TO_PHOTOS_SHORTCUT =
   "https://www.icloud.com/shortcuts/14e9aebf04b24156acc34ceccf7e6fcd"
 
-function SaveButton({
-  job,
-  share,
-}: {
-  job: JobResponse
-  share: SharePrep | null
-}) {
+function SaveButton({ job }: { job: JobResponse }) {
   const isIos =
     typeof window !== "undefined" &&
     /iphone|ipad|ipod/i.test(window.navigator.userAgent)
 
-  if (isIos) return <IosShareButton job={job} share={share} />
+  if (isIos) return <IosShareButton job={job} />
 
   return (
     <div className="flex-1">
@@ -887,27 +860,18 @@ function SaveButton({
   )
 }
 
-/* iOS share button. Cobalt's invariant: the File is already local before  */
-/* the share button is reachable. We satisfy that by gating SaveButton on   */
-/* phase === "done", which useDownload only enters once staging finished.   */
-/* So this component just sees a ready File (or null = fallback to anchor   */
-/* download) and calls navigator.share({ files: [file] }) inside the click  */
-/* gesture. No background work, no expiry, no waiting state.                */
+/* iOS share button. URL-only share: the cobalt shortcut's "Get contents   */
+/* of URLs" fetches our /api/downloads/:id/file endpoint directly. No       */
+/* client-side staging, no File payload — just the URL. If the browser     */
+/* doesn't expose Web Share, we fall back to the anchor download.          */
 
-function IosShareButton({
-  job,
-  share,
-}: {
-  job: JobResponse
-  share: SharePrep | null
-}) {
+function IosShareButton({ job }: { job: JobResponse }) {
   const [sharing, setSharing] = useState(false)
-  const file = share?.file ?? null
+  const canShare =
+    typeof navigator !== "undefined" &&
+    typeof navigator.share === "function"
 
-  if (!file) {
-    // Either non-iOS (shouldn't happen here), no Web Share API, file too
-    // big, or staging errored. Plain anchor download — still works and
-    // lets the user invoke the Photos Shortcut from Files.
+  if (!canShare) {
     return (
       <div className="flex-1">
         <a
@@ -920,15 +884,6 @@ function IosShareButton({
             影片
           </span>
         </a>
-        {share?.reason === "too-big" ? (
-          <p className="mt-1.5 text-center text-[11px] leading-snug text-[var(--subtle)]">
-            file too big for iOS share — saving to Files instead
-          </p>
-        ) : share?.reason === "error" && share.errorMessage ? (
-          <p className="mt-1.5 text-center text-[11px] leading-snug text-hot">
-            share unavailable: {share.errorMessage}
-          </p>
-        ) : null}
         <IosPhotosHint />
       </div>
     )
@@ -941,24 +896,19 @@ function IosShareButton({
       return
     }
     setSharing(true)
-    // Provide BOTH `url` and `files` so iOS shows the union of activities:
-    //   - file activities (Save Video, Save to Files, Add to Shared Album)
-    //   - URL activities — including the cobalt "Save to Photos" Siri
-    //     Shortcut, which is configured to "Receive URLs from Share Sheet"
-    //     and so is filtered out when we share files-only. The shortcut
-    //     fetches the URL via "Get contents of URLs" and saves to Photos.
+    // URL-only share. The cobalt "Save to Photos" Shortcut is configured
+    // to "Receive URLs from Share Sheet" → "Get contents of URLs" → save
+    // to Photos: it needs an https URL it can actually fetch. Mixing
+    // `files` into the share confuses iOS into handing the shortcut a
+    // temp/placeholder URL that fails to fetch, so we ship url-only.
+    // This matches cobalt's `shareURL` path (used for their redirect
+    // tunnels — the path the cobalt shortcut was designed for).
     const absoluteUrl = new URL(
       fileUrl(job.id),
       window.location.origin,
     ).toString()
-    const payload: ShareData = { url: absoluteUrl, files: [file] }
-    // Some iOS versions reject the union; fall back to files-only.
-    const supported =
-      typeof navigator.canShare !== "function" ||
-      navigator.canShare(payload)
-    const finalPayload = supported ? payload : { files: [file] }
     void navigator
-      .share(finalPayload)
+      .share({ url: absoluteUrl })
       .catch((err) => {
         const name = (err as { name?: string })?.name
         if (name && name !== "AbortError") {
