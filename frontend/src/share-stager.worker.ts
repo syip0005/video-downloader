@@ -6,9 +6,9 @@
  * it's the only reliable OPFS write path on the platform — main-thread
  * createWritable() / pipeTo() is buggy or unimplemented depending on iOS
  * version. Used by IosShareButton so the resulting File is backed by a
- * real OPFS inode (which iOS' share extensions accept) rather than an
- * opaque in-memory Blob (which they silently reject, leaving the user
- * with the degenerate "Add to Shared Album / Find on Amazon" sheet).
+ * real OPFS inode (which iOS' share extensions accept reliably) rather
+ * than an in-memory Blob (which Shortcuts sometimes silently reject,
+ * leaving the user with the degenerate "Add to Shared Album" sheet).
  */
 
 interface InitMessage {

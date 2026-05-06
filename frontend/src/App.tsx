@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { motion, useReducedMotion, AnimatePresence } from "motion/react"
 import {
   fileUrl,
@@ -8,6 +8,7 @@ import {
   type ProbeResponse,
 } from "./api"
 import { useDownload } from "./useDownload"
+import type { SharePrep } from "./share-prep"
 
 type Theme = "light" | "dark"
 
@@ -582,11 +583,17 @@ function JobPanel({
   onReset: () => void
   onPickAgain?: () => void
 }) {
-  const { phase, job, error, probe } = state
+  const { phase, job, error, probe, share } = state
   const progressPct = Math.round(((job?.progress ?? 0) as number) * 100)
 
   const title = job?.title ?? probe?.title ?? null
   const thumb = job?.thumbnail ?? probe?.thumbnail ?? null
+  // During client-side staging the backend is finished but the share file
+  // isn't local yet. We freeze the bar at 100% with the active shimmer so
+  // users see continuous motion through the whole "preparing" period.
+  const isStaging = phase === "staging"
+  const barPct = phase === "done" || isStaging ? 100 : progressPct
+  const barActive = phase === "active" || isStaging
 
   return (
     <div
@@ -609,18 +616,28 @@ function JobPanel({
       </div>
 
       <ProgressBar
-        pct={phase === "done" ? 100 : progressPct}
-        active={phase === "active"}
+        pct={barPct}
+        active={barActive}
         failed={phase === "error"}
         done={phase === "done"}
       />
 
       <div className="flex items-center justify-between gap-2 p-3">
         {phase === "done" && job ? (
-          <SaveButton job={job} />
+          <SaveButton job={job} share={share} />
         ) : phase === "error" ? (
           <span className="flex-1 truncate text-xs text-hot">
             {error ?? "something went wrong"}
+          </span>
+        ) : isStaging ? (
+          <span className="flex-1 inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--muted)]">
+            <motion.span
+              aria-hidden
+              className="inline-block h-3 w-3 rounded-full border-2 border-[var(--border)] border-t-[var(--fg)]"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 0.9, ease: "linear", repeat: Infinity }}
+            />
+            preparing share…
           </span>
         ) : (
           <span className="flex-1 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--subtle)]">
@@ -726,6 +743,8 @@ function StatusDot({
       ? "bg-mint"
       : phase === "error"
       ? "bg-hot"
+      : phase === "staging"
+      ? "bg-cyan"
       : status === "downloading"
       ? "bg-cyan"
       : "bg-lemon"
@@ -733,7 +752,7 @@ function StatusDot({
     <span className="relative flex h-2 w-2 shrink-0">
       <span
         className={`absolute inline-flex h-full w-full rounded-full opacity-60 ${cls} ${
-          phase === "active" ? "animate-ping" : ""
+          phase === "active" || phase === "staging" ? "animate-ping" : ""
         }`}
       />
       <span className={`relative inline-flex h-2 w-2 rounded-full ${cls}`} />
@@ -743,6 +762,7 @@ function StatusDot({
 
 function statusLabel(phase: string, status?: JobResponse["status"]): string {
   if (phase === "submitting") return "starting"
+  if (phase === "staging") return "preparing share"
   if (phase === "done") return "ready"
   if (phase === "error") return "failed"
   if (status === "queued") return "queued"
@@ -826,23 +846,29 @@ function MoonIcon() {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Save button — plain anchor download. Backend sends                         */
-/* Content-Disposition: attachment, so iOS shows its native download tray and */
-/* the file lands in the Files app in ~1s. For "save to Photos" we follow     */
-/* cobalt.tools' approach: link to a one-tap iCloud Shortcut (installed once, */
-/* then appears in the iOS Files share sheet). There's no clean web API for   */
-/* writing to the Photo Library; navigator.share({files}) is too slow and     */
-/* unreliable to use as a default path.                                       */
+/* Save button. Non-iOS: plain anchor download. Backend sends                 */
+/* Content-Disposition: attachment, so iOS Safari also shows its native       */
+/* download tray and lands the file in Files in ~1s. iOS branch: file is     */
+/* already staged client-side (see useDownload's staging phase), so the      */
+/* button can call navigator.share synchronously inside the user gesture —   */
+/* the same invariant cobalt.tools relies on. The Save-to-Photos Siri        */
+/* Shortcut shows up once installed; we just link to install it.             */
 
 const IOS_SAVE_TO_PHOTOS_SHORTCUT =
   "https://www.icloud.com/shortcuts/14e9aebf04b24156acc34ceccf7e6fcd"
 
-function SaveButton({ job }: { job: JobResponse }) {
+function SaveButton({
+  job,
+  share,
+}: {
+  job: JobResponse
+  share: SharePrep | null
+}) {
   const isIos =
     typeof window !== "undefined" &&
     /iphone|ipad|ipod/i.test(window.navigator.userAgent)
 
-  if (isIos) return <IosShareButton job={job} />
+  if (isIos) return <IosShareButton job={job} share={share} />
 
   return (
     <div className="flex-1">
@@ -861,265 +887,27 @@ function SaveButton({ job }: { job: JobResponse }) {
   )
 }
 
-/* iOS uses navigator.share({ files }) — same path cobalt.tools uses for     */
-/* local Files. Pre-fetches the finished file as a Blob in the background;   */
-/* on click calls navigator.share synchronously so iOS retains the user-     */
-/* activation gesture. iOS' share sheet then offers Save Video, Save to      */
-/* Files, AirDrop, Messages, and any installed Siri Shortcuts that accept    */
-/* video — which is how the cobalt "Save to Photos" shortcut becomes a       */
-/* one-tap destination once the user installs it.                            */
+/* iOS share button. Cobalt's invariant: the File is already local before  */
+/* the share button is reachable. We satisfy that by gating SaveButton on   */
+/* phase === "done", which useDownload only enters once staging finished.   */
+/* So this component just sees a ready File (or null = fallback to anchor   */
+/* download) and calls navigator.share({ files: [file] }) inside the click  */
+/* gesture. No background work, no expiry, no waiting state.                */
 
-type ShareReadyState = "preparing" | "ready" | "sharing" | "no-share" | "error"
+function IosShareButton({
+  job,
+  share,
+}: {
+  job: JobResponse
+  share: SharePrep | null
+}) {
+  const [sharing, setSharing] = useState(false)
+  const file = share?.file ?? null
 
-// Pre-fetch + file-share gate. iOS holds the entire blob in tab RAM for the
-// share IPC; above ~256 MB it frequently OOMs the tab. 512 MB is the upper
-// limit we'll attempt before falling back to the anchor download.
-const IOS_SHARE_MAX_BYTES = 512 * 1024 * 1024
-
-// Map common containers to MIME types so iOS resolves the right UTI when
-// blob.type comes back empty (rare). Mirrors the server's mimetypes
-// guess-table for the formats yt-dlp actually emits.
-const EXT_TO_MIME: Record<string, string> = {
-  mp4: "video/mp4",
-  m4v: "video/mp4",
-  mov: "video/quicktime",
-  webm: "video/webm",
-  mkv: "video/x-matroska",
-  m4a: "audio/mp4",
-  mp3: "audio/mpeg",
-  ogg: "audio/ogg",
-  opus: "audio/ogg",
-  wav: "audio/wav",
-  flac: "audio/flac",
-}
-
-function mimeFromFilename(name: string): string {
-  const dot = name.lastIndexOf(".")
-  if (dot < 0) return "application/octet-stream"
-  const ext = name.slice(dot + 1).toLowerCase()
-  return EXT_TO_MIME[ext] ?? "application/octet-stream"
-}
-
-const OPFS_STAGING_DIR = "mums-share-staging"
-
-async function getStagingDir(): Promise<FileSystemDirectoryHandle | null> {
-  if (typeof navigator === "undefined") return null
-  if (!navigator.storage?.getDirectory) return null
-  try {
-    const root = await navigator.storage.getDirectory()
-    return await root.getDirectoryHandle(OPFS_STAGING_DIR, { create: true })
-  } catch {
-    return null
-  }
-}
-
-/**
- * Stage a server response into an OPFS file via a Web Worker (so we can
- * use createSyncAccessHandle, the only OPFS write API that works
- * reliably on iOS Safari) and return the resulting on-disk File.
- *
- * Critical for iOS: a File from FileSystemFileHandle.getFile() is backed
- * by a real inode in the OPFS sandbox, so iOS' share extensions (Photos,
- * Save Video, Shortcuts including the cobalt "Save to Photos" one)
- * accept it. A `new File([blob], ...)` constructed from a fetched Blob
- * is opaque to those extensions and gets silently rejected — leaving
- * the user with the degenerate "Add to Shared Album / Find on Amazon"
- * sheet. Falls back to in-memory File if OPFS isn't available.
- */
-async function materializeToOpfs(
-  url: string,
-  filename: string,
-  signal: AbortSignal,
-  onHandle: (h: FileSystemFileHandle) => void,
-): Promise<File> {
-  const dir = await getStagingDir()
-  if (!dir) {
-    // No OPFS — fall back to the in-memory File (Shortcut won't appear
-    // but at least Save to Files / AirDrop / Messages still work).
-    const res = await fetch(url, { signal })
-    if (!res.ok) throw new Error(`fetch failed: ${res.status}`)
-    const blob = await res.blob()
-    const type = blob.type || mimeFromFilename(filename)
-    return new File([blob], filename, { type })
-  }
-
-  await streamViaWorker(url, OPFS_STAGING_DIR, filename, signal)
-
-  const handle = await dir.getFileHandle(filename)
-  onHandle(handle)
-  return await handle.getFile()
-}
-
-async function streamViaWorker(
-  url: string,
-  dirName: string,
-  filename: string,
-  signal: AbortSignal,
-): Promise<void> {
-  const worker = new Worker(
-    new URL("./share-stager.worker.ts", import.meta.url),
-    { type: "module" },
-  )
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const onAbort = () => {
-        signal.removeEventListener("abort", onAbort)
-        reject(new DOMException("aborted", "AbortError"))
-      }
-      worker.addEventListener(
-        "message",
-        (e: MessageEvent) => {
-          const data = e.data as { ok?: boolean; error?: string }
-          if (data?.ok) resolve()
-          else reject(new Error(data?.error ?? "share worker failed"))
-        },
-        { once: true },
-      )
-      worker.addEventListener("error", (e) => {
-        reject(new Error(e.message ?? "share worker crashed"))
-      })
-      signal.addEventListener("abort", onAbort)
-      worker.postMessage({ type: "init", url, dirName, filename })
-    })
-  } finally {
-    worker.terminate()
-  }
-}
-
-// OPFS getFileHandle rejects "/" and "\" in names. yt-dlp output can
-// include slashes (channel/title patterns) and other special chars; clamp
-// to a safe subset and limit length so iOS' UTI resolver can read the ext.
-function sanitizeFilename(name: string): string {
-  let s = name.replace(/[/\\:*?"<>|]/g, "_").trim()
-  if (s.length > 200) {
-    const dot = s.lastIndexOf(".")
-    const ext = dot > 0 ? s.slice(dot) : ""
-    s = s.slice(0, 200 - ext.length) + ext
-  }
-  return s || "video.mp4"
-}
-
-function IosShareButton({ job }: { job: JobResponse }) {
-  const fileRef = useRef<File | null>(null)
-  const opfsHandleRef = useRef<FileSystemFileHandle | null>(null)
-  const tooBig =
-    typeof job.filesize === "number" && job.filesize > IOS_SHARE_MAX_BYTES
-  const [state, setState] = useState<ShareReadyState>(() => {
-    if (tooBig) return "no-share"
-    return typeof navigator !== "undefined" &&
-      typeof navigator.canShare === "function"
-      ? "preparing"
-      : "no-share"
-  })
-  const [errMsg, setErrMsg] = useState<string | null>(null)
-
-  // Materialize runs once per job — NOT every time state changes. If state
-  // were in deps, transitioning preparing → ready would re-run the effect,
-  // fire the cleanup, and (if cleanup deleted the OPFS file) hand the
-  // share path a File backed by a dead inode.
-  useEffect(() => {
-    if (tooBig) return
-    if (
-      typeof navigator === "undefined" ||
-      typeof navigator.canShare !== "function"
-    ) {
-      return
-    }
-    const ac = new AbortController()
-    ;(async () => {
-      try {
-        const filename = sanitizeFilename(job.filename ?? "video.mp4")
-        const file = await materializeToOpfs(
-          fileUrl(job.id),
-          filename,
-          ac.signal,
-          (h) => {
-            opfsHandleRef.current = h
-          },
-        )
-        if (
-          typeof navigator.canShare === "function" &&
-          navigator.canShare({ files: [file] })
-        ) {
-          fileRef.current = file
-          setState("ready")
-        } else {
-          console.warn("canShare returned false for File", {
-            name: file.name,
-            size: file.size,
-            type: file.type,
-          })
-          setErrMsg("iOS rejected the file for sharing")
-          setState("error")
-        }
-      } catch (err) {
-        const name = (err as { name?: string })?.name
-        if (name === "AbortError") return
-        console.error("share prep failed:", err)
-        setErrMsg(
-          (err as { message?: string })?.message ?? "couldn't prepare share",
-        )
-        setState("error")
-      }
-    })()
-    return () => {
-      // Just abort the in-flight fetch/worker. Do NOT delete the staged
-      // OPFS file here — fileRef may be holding a File backed by it.
-      ac.abort()
-    }
-  }, [job.id, job.filename, tooBig])
-
-  // Cleanup the OPFS file only on real unmount.
-  useEffect(() => {
-    return () => {
-      const handle = opfsHandleRef.current
-      if (!handle) return
-      opfsHandleRef.current = null
-      void (async () => {
-        try {
-          const dir = await getStagingDir()
-          if (dir) await dir.removeEntry(handle.name)
-        } catch {
-          /* ignore */
-        }
-      })()
-    }
-  }, [])
-
-  const handleShare = () => {
-    if (state === "sharing") {
-      // Tap-to-cancel: unstick our UI; iOS keeps its sheet up regardless.
-      setState("ready")
-      return
-    }
-    if (state !== "ready" || !fileRef.current) return
-    const file = fileRef.current
-    setState("sharing")
-    // 60s watchdog — share usually settles, but tab backgrounding or Low
-    // Power Mode can leave it pending.
-    const watchdog = window.setTimeout(() => setState("ready"), 60_000)
-    // Match cobalt exactly: { files } only, no title/text/url. The Save-to-
-    // Photos Shortcut keys off the file's UTI; extra share-sheet metadata
-    // may cause iOS to route the share differently.
-    void navigator
-      .share({ files: [file] })
-      .catch((err) => {
-        const name = (err as { name?: string })?.name
-        if (name && name !== "AbortError") {
-          console.warn("share rejected:", name, err)
-        }
-      })
-      .finally(() => {
-        window.clearTimeout(watchdog)
-        setState("ready")
-      })
-  }
-
-  if (state === "no-share" || state === "error") {
-    // Browser/OS rejected file-share or the OPFS staging failed. Fall back
-    // to the plain anchor download — still works in iOS Safari proper
-    // (lands in Files), and lets the user use the Photos shortcut from
-    // there.
+  if (!file) {
+    // Either non-iOS (shouldn't happen here), no Web Share API, file too
+    // big, or staging errored. Plain anchor download — still works and
+    // lets the user invoke the Photos Shortcut from Files.
     return (
       <div className="flex-1">
         <a
@@ -1132,9 +920,13 @@ function IosShareButton({ job }: { job: JobResponse }) {
             影片
           </span>
         </a>
-        {state === "error" && errMsg ? (
+        {share?.reason === "too-big" ? (
+          <p className="mt-1.5 text-center text-[11px] leading-snug text-[var(--subtle)]">
+            file too big for iOS share — saving to Files instead
+          </p>
+        ) : share?.reason === "error" && share.errorMessage ? (
           <p className="mt-1.5 text-center text-[11px] leading-snug text-hot">
-            share unavailable: {errMsg}
+            share unavailable: {share.errorMessage}
           </p>
         ) : null}
         <IosPhotosHint />
@@ -1142,38 +934,50 @@ function IosShareButton({ job }: { job: JobResponse }) {
     )
   }
 
-  const label =
-    state === "preparing" ? (
-      <span className="inline-flex items-center gap-2 opacity-80">
-        <Spinner />
-        preparing share…
-      </span>
-    ) : state === "sharing" ? (
-      <span className="inline-flex items-center gap-2">
-        <Spinner />
-        sharing… tap to cancel
-      </span>
-    ) : (
-      <>
-        ⤴ share{" "}
-        <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
-          影片
-        </span>
-      </>
-    )
+  const onClick = () => {
+    if (sharing) {
+      // Tap-to-cancel unsticks our UI; iOS keeps its own sheet up.
+      setSharing(false)
+      return
+    }
+    setSharing(true)
+    // Match cobalt exactly: { files } only — no title/text/url. The
+    // Save-to-Photos Shortcut keys off the file's UTI; extra share-sheet
+    // metadata can cause iOS to route the share elsewhere.
+    void navigator
+      .share({ files: [file] })
+      .catch((err) => {
+        const name = (err as { name?: string })?.name
+        if (name && name !== "AbortError") {
+          console.warn("share rejected:", name, err)
+        }
+      })
+      .finally(() => setSharing(false))
+  }
 
   return (
     <div className="flex-1">
       <button
         type="button"
-        onClick={handleShare}
-        disabled={state === "preparing"}
-        className="block w-full rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90 disabled:opacity-60"
+        onClick={onClick}
+        className="block w-full rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
       >
-        {label}
+        {sharing ? (
+          <span className="inline-flex items-center gap-2">
+            <Spinner />
+            sharing… tap to cancel
+          </span>
+        ) : (
+          <>
+            ⤴ share{" "}
+            <span lang="zh-Hant" style={{ fontFamily: "var(--font-tc)" }}>
+              影片
+            </span>
+          </>
+        )}
       </button>
       <p className="mt-1.5 text-center text-[11px] leading-snug text-[var(--subtle)]">
-        opens iOS share sheet · big files take 20–60s
+        opens iOS share sheet
       </p>
       <IosPhotosHint />
     </div>
