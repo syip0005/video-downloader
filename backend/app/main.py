@@ -63,7 +63,18 @@ def create_app() -> FastAPI:
     settings = get_settings()
     setup_logging(settings.log_level)
 
-    app = FastAPI(title="Video Downloader", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Video Downloader",
+        version="0.1.0",
+        lifespan=lifespan,
+        # Docs/OpenAPI live under /api/* so nginx setups that only proxy
+        # /api/* to the backend (and route everything else to the SPA)
+        # can still reach them. Direct hits on /docs would otherwise fall
+        # through to the SPA's catch-all and show index.html.
+        docs_url="/api/docs",
+        redoc_url="/api/redoc",
+        openapi_url="/api/openapi.json",
+    )
 
     app.add_middleware(
         CORSMiddleware,

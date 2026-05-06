@@ -12,6 +12,13 @@ RUN npm run build
 # ---- Stage 2: backend runtime ----
 FROM python:3.13-slim AS runtime
 
+# Build identity. CI / `docker build` should pass --build-arg GIT_SHA=$(git
+# rev-parse --short HEAD) so /api/version reflects what's actually running.
+ARG GIT_SHA=dev
+ARG BUILT_AT=dev
+ENV VD_GIT_SHA=$GIT_SHA \
+    VD_BUILT_AT=$BUILT_AT
+
 # ffmpeg is required by yt-dlp for merging video+audio streams and audio extraction.
 # tini gives us a proper PID 1 so SIGTERM reaches uvicorn cleanly on `docker stop`.
 RUN apt-get update && apt-get install -y --no-install-recommends \
