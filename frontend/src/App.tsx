@@ -836,6 +836,20 @@ function MoonIcon() {
 const IOS_SAVE_TO_PHOTOS_SHORTCUT =
   "https://www.icloud.com/shortcuts/14e9aebf04b24156acc34ceccf7e6fcd"
 
+// Generic, ASCII-clean filename whose extension matches what yt-dlp produced.
+// Used in the share URL so the path stays free of %-encoded chars while
+// still ending in .mp4 / .m4a / etc. for iOS UTI inference.
+function shareFilename(original: string | null): string {
+  if (!original) return "video.mp4"
+  const dot = original.lastIndexOf(".")
+  if (dot <= 0 || dot === original.length - 1) return "video.mp4"
+  const ext = original.slice(dot + 1).toLowerCase()
+  // Pick a sensible base by media type.
+  const audio = new Set(["m4a", "mp3", "ogg", "opus", "wav", "flac"])
+  const base = audio.has(ext) ? "audio" : "video"
+  return `${base}.${ext}`
+}
+
 function SaveButton({ job }: { job: JobResponse }) {
   const isIos =
     typeof window !== "undefined" &&
@@ -903,8 +917,14 @@ function IosShareButton({ job }: { job: JobResponse }) {
     // temp/placeholder URL that fails to fetch, so we ship url-only.
     // This matches cobalt's `shareURL` path (used for their redirect
     // tunnels — the path the cobalt shortcut was designed for).
+    // ASCII-safe generic filename for the share URL. The backend only
+    // resolves the file by job id, so the path filename is decorative —
+    // we just need it ending in the right extension so iOS Shortcuts'
+    // "Save to Photos" can derive the UTI. Skipping yt-dlp's actual
+    // filename avoids URL-encoded spaces/unicode/brackets that have
+    // been observed to crash Shortcuts mid-pipeline.
     const absoluteUrl = new URL(
-      fileUrl(job.id, job.filename),
+      fileUrl(job.id, shareFilename(job.filename)),
       window.location.origin,
     ).toString()
     console.log("[share] navigator.share url:", absoluteUrl, {
