@@ -76,21 +76,46 @@ async def get_download(job_id: str, manager: JobManagerDep) -> JobResponse:
     return _to_response(job)
 
 
-@router.get(
-    "/{job_id}/file",
-    summary="Stream the downloaded file (iOS-friendly attachment)",
-    response_class=FileResponse,
-)
-async def get_download_file(job_id: str, manager: JobManagerDep) -> FileResponse:
+async def _serve_file(job_id: str, manager: JobManagerDep) -> FileResponse:
     path = await manager.file_path(job_id)
     if path is None:
         raise JobNotFound(f"file for job {job_id} not available")
 
-    # Force a download prompt on iOS Safari instead of inline playback.
     media_type, _ = mimetypes.guess_type(path.name)
+    # `inline` (not `attachment`) so iOS Shortcuts' "Get contents of URLs"
+    # gets a media-typed response that "Save to Photos" recognises as a
+    # video. The frontend `<a download>` attribute is enough to make
+    # browsers download the file when the user hits the save button on
+    # non-iOS, regardless of disposition.
     return FileResponse(
         path,
         filename=path.name,
         media_type=media_type or "application/octet-stream",
-        content_disposition_type="attachment",
+        content_disposition_type="inline",
     )
+
+
+@router.get(
+    "/{job_id}/file",
+    summary="Stream the downloaded file",
+    response_class=FileResponse,
+)
+async def get_download_file(job_id: str, manager: JobManagerDep) -> FileResponse:
+    return await _serve_file(job_id, manager)
+
+
+@router.get(
+    "/{job_id}/file/{filename}",
+    summary=(
+        "Same file as /file, but with the filename in the URL path so iOS "
+        "Shortcuts can derive the UTI from the .mp4/.m4a extension"
+    ),
+    response_class=FileResponse,
+    include_in_schema=False,
+)
+async def get_download_file_named(
+    job_id: str,
+    filename: str,  # noqa: ARG001 — decorative, only the id is resolved
+    manager: JobManagerDep,
+) -> FileResponse:
+    return await _serve_file(job_id, manager)

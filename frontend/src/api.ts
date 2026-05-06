@@ -93,8 +93,13 @@ export function getDownload(id: string): Promise<JobResponse> {
   return request<JobResponse>(`/api/downloads/${id}`)
 }
 
-export function fileUrl(id: string): string {
-  return `/api/downloads/${id}/file`
+// Pass `filename` to embed it in the path. The backend ignores the value
+// for resolution but iOS Shortcuts needs the URL to end in .mp4/.m4a/etc.
+// so "Save to Photos" can derive the media UTI from the extension.
+export function fileUrl(id: string, filename?: string | null): string {
+  const base = `/api/downloads/${id}/file`
+  if (!filename) return base
+  return `${base}/${encodeURIComponent(filename)}`
 }
 
 export const TERMINAL_STATUSES: ReadonlySet<JobStatus> = new Set([

@@ -846,7 +846,7 @@ function SaveButton({ job }: { job: JobResponse }) {
   return (
     <div className="flex-1">
       <a
-        href={fileUrl(job.id)}
+        href={fileUrl(job.id, job.filename)}
         download={job.filename ?? undefined}
         className="block rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
       >
@@ -875,7 +875,7 @@ function IosShareButton({ job }: { job: JobResponse }) {
     return (
       <div className="flex-1">
         <a
-          href={fileUrl(job.id)}
+          href={fileUrl(job.id, job.filename)}
           download={job.filename ?? undefined}
           className="block rounded-xl bg-[var(--fg)] px-4 py-2.5 text-center text-sm font-medium text-[var(--bg)] transition hover:opacity-90"
         >
@@ -904,7 +904,7 @@ function IosShareButton({ job }: { job: JobResponse }) {
     // This matches cobalt's `shareURL` path (used for their redirect
     // tunnels — the path the cobalt shortcut was designed for).
     const absoluteUrl = new URL(
-      fileUrl(job.id),
+      fileUrl(job.id, job.filename),
       window.location.origin,
     ).toString()
     console.log("[share] navigator.share url:", absoluteUrl, {
