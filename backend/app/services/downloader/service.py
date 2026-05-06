@@ -1,5 +1,7 @@
 import asyncio
+import json
 import logging
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -130,6 +132,102 @@ async def probe(url: str) -> ProbeResult:
     return await asyncio.to_thread(_probe_blocking, url)
 
 
+def _output_codecs(path: Path) -> tuple[str | None, str | None]:
+    """Return (video_codec, audio_codec) per ffprobe; (None, None) on failure."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=codec_name,codec_type",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None, None
+
+    try:
+        streams = json.loads(result.stdout).get("streams", [])
+    except json.JSONDecodeError:
+        return None, None
+
+    video = next(
+        (s.get("codec_name") for s in streams if s.get("codec_type") == "video"),
+        None,
+    )
+    audio = next(
+        (s.get("codec_name") for s in streams if s.get("codec_type") == "audio"),
+        None,
+    )
+    return video, audio
+
+
+def _ensure_ios_compatible(path: Path) -> Path:
+    """Transcode to H.264/AAC if the merged file isn't already iOS-savable.
+
+    The codec-filtered selectors usually pick a compatible stream and this
+    is a no-op. Kicks in only when the source has no H.264 / AAC stream
+    at all — e.g. some YouTube uploads are AV1-only at higher resolutions.
+    Audio-only outputs (.m4a from the AUDIO format) skip transcoding;
+    the FFmpegExtractAudio postprocessor already produces AAC.
+    """
+    video_codec, audio_codec = _output_codecs(path)
+    if video_codec is None:
+        # Audio-only file — postprocessor produces AAC/m4a already.
+        return path
+    if video_codec == "h264" and audio_codec == "aac":
+        return path
+
+    log.info(
+        "transcoding %s to H.264/AAC (was vcodec=%s acodec=%s)",
+        path.name,
+        video_codec,
+        audio_codec,
+    )
+
+    out = path.parent / f"{path.stem}.h264.mp4"
+    audio_arg = ["-c:a", "copy"] if audio_codec == "aac" else ["-c:a", "aac", "-b:a", "192k"]
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(path),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        *audio_arg,
+        "-movflags",
+        "+faststart",
+        str(out),
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=3600)
+    except subprocess.CalledProcessError as e:
+        stderr = (e.stderr or b"").decode("utf-8", errors="replace")
+        log.error("transcode failed: %s", stderr[-500:])
+        out.unlink(missing_ok=True)
+        return path
+    except subprocess.TimeoutExpired:
+        log.error("transcode timed out for %s", path.name)
+        out.unlink(missing_ok=True)
+        return path
+
+    path.unlink()
+    out.rename(path)
+    return path
+
+
 def _validate(info: dict[str, Any], *, max_duration_seconds: int) -> None:
     if info.get("is_live"):
         raise UnsupportedURL("live streams are not supported")
@@ -210,6 +308,11 @@ def _download_blocking(
         if not candidates:
             raise DownloadFailed(f"output file not found for {out_id}")
         final_path = candidates[0]
+
+    # Transcode to H.264/AAC if the picked stream wasn't iOS-savable. This
+    # is a no-op when the format selector landed on an avc1+mp4a pair
+    # (the common case); only fires for AV1-only / Opus-only sources.
+    final_path = _ensure_ios_compatible(final_path)
 
     if on_progress is not None:
         on_progress(1.0)
