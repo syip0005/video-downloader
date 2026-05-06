@@ -907,6 +907,12 @@ function IosShareButton({ job }: { job: JobResponse }) {
       fileUrl(job.id),
       window.location.origin,
     ).toString()
+    console.log("[share] navigator.share url:", absoluteUrl, {
+      origin: window.location.origin,
+      protocol: window.location.protocol,
+      standalone: (window.navigator as { standalone?: boolean }).standalone,
+      userAgent: window.navigator.userAgent,
+    })
     void navigator
       .share({ url: absoluteUrl })
       .catch((err) => {
